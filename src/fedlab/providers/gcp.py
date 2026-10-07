@@ -7,7 +7,7 @@ from google.cloud import compute_v1
 
 from .. import cloud_init
 from ..config import TAG_KEY, Node
-from .base import NodeInfo, Provider
+from .base import CheckResult, NodeInfo, Provider
 
 IMAGE = "projects/ubuntu-os-cloud/global/images/family/ubuntu-2204-lts"
 _STATE = {
@@ -169,3 +169,41 @@ class GcpProvider(Provider):
         except NotFound:
             pass
         return actions
+
+    def check(self, nodes: list[Node]) -> list[CheckResult]:
+        import google.auth
+
+        results: list[CheckResult] = []
+
+        def run(name: str, fn) -> bool:
+            try:
+                results.append(CheckResult(name, True, fn() or ""))
+                return True
+            except Exception as e:
+                results.append(CheckResult(name, False, f"{type(e).__name__}: {e}"))
+                return False
+
+        def creds() -> str:
+            _, proj = google.auth.default()
+            return f"application default credentials (adc project: {proj or 'none'})"
+
+        if not run("gcp credentials", creds) or not run("gcp project", lambda: self.project):
+            return results
+
+        run("gcp: compute API / list firewalls", lambda: next(iter(compute_v1.FirewallsClient().list(project=self.project)), None) and "ok")
+        run(
+            "gcp: Ubuntu 22.04 image",
+            lambda: compute_v1.ImagesClient().get_from_family(project="ubuntu-os-cloud", family="ubuntu-2204-lts").name,
+        )
+        for n in nodes:
+            run(
+                f"gcp {n.location}: {n.name} machine type",
+                lambda n=n: compute_v1.MachineTypesClient().get(
+                    project=self.project, zone=n.location, machine_type=n.machine_type
+                ).name,
+            )
+            run(
+                f"gcp {n.location}: list instances",
+                lambda n=n: next(iter(compute_v1.InstancesClient().list(project=self.project, zone=n.location)), None) and "ok",
+            )
+        return results

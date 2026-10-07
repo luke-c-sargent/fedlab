@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .base import NodeInfo, Provider
+from .base import CheckResult, NodeInfo, Provider
 
 if TYPE_CHECKING:
     from ..config import Settings
@@ -21,4 +21,4 @@ def get_provider(name: str, cfg: Settings, key: Keypair) -> Provider:
     raise ValueError(f"unknown provider {name!r}")
 
 
-__all__ = ["NodeInfo", "Provider", "get_provider"]
+__all__ = ["CheckResult", "NodeInfo", "Provider", "get_provider"]

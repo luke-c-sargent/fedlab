@@ -20,6 +20,13 @@ class NodeInfo:
     running_since: datetime | None = None  # tz-aware; only set while running
 
 
+@dataclass
+class CheckResult:
+    name: str
+    ok: bool
+    detail: str = ""
+
+
 class Provider(ABC):
     def __init__(self, cfg: Settings, key: Keypair):
         self.cfg = cfg
@@ -43,4 +50,11 @@ class Provider(ABC):
         """Delete every resource tagged for this run in the nodes' locations.
 
         Returns human-readable descriptions of what was (or with dry_run, would be) deleted.
+        """
+
+    @abstractmethod
+    def check(self, nodes: list[Node]) -> list[CheckResult]:
+        """Read-only preflight: credentials, permissions and requirements for these nodes.
+
+        Must not create, modify or delete anything. Never raises; failures are returned as results.
         """

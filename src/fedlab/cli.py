@@ -1,8 +1,9 @@
-"""fedlab CLI: up / status / start / stop / ssh / destroy."""
+"""fedlab CLI: check / up / status / start / stop / ssh / destroy."""
 
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -110,6 +111,38 @@ def _print_status(cfg: Settings, infos: list[NodeInfo]) -> None:
             days = (datetime.now(timezone.utc) - i.running_since).total_seconds() / 86400
             if days > cfg.warn_after_days:
                 console.print(f"[yellow]warning:[/] {i.name} has been running {days:.1f} days (billing!)")
+
+
+@app.command()
+def check(config: Optional[Path] = ConfigOpt, node: Optional[list[str]] = NodeOpt):
+    """Verify credentials, permissions and requirements. Read-only; creates nothing in any cloud."""
+    cfg = load_settings(config)
+    nodes = cfg.resolved_nodes()
+    if node:
+        unknown = set(node) - {n.name for n in nodes}
+        if unknown:
+            raise typer.BadParameter(f"unknown node(s): {sorted(unknown)}; known: {[n.name for n in nodes]}")
+        nodes = [n for n in nodes if n.name in node]
+    key = sshmod.existing_or_ephemeral_keypair(cfg)  # don't write a keypair just to check
+
+    failed = 0
+    by_provider: dict[str, list[Node]] = {}
+    for n in nodes:
+        by_provider.setdefault(n.provider, []).append(n)
+    with ThreadPoolExecutor() as ex:
+        futures = {p: ex.submit(get_provider(p, cfg, key).check, ns) for p, ns in by_provider.items()}
+        for prov, fut in futures.items():
+            for r in fut.result():
+                failed += not r.ok
+                mark = "[green]ok  [/]" if r.ok else "[red]FAIL[/]"
+                console.print(f"{mark} {r.name}" + (f" [dim]{r.detail}[/]" if r.detail else ""), highlight=False)
+    if not shutil.which("ssh"):
+        console.print("[red]FAIL[/] local: `ssh` not found on PATH")
+        failed += 1
+    if failed:
+        console.print(f"[red]{failed} check(s) failed[/]")
+        raise typer.Exit(1)
+    console.print("[green]All checks passed.[/]")
 
 
 @app.command()

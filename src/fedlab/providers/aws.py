@@ -7,7 +7,7 @@ from botocore.exceptions import ClientError
 
 from .. import cloud_init
 from ..config import TAG_KEY, Node
-from .base import NodeInfo, Provider
+from .base import CheckResult, NodeInfo, Provider
 
 LIVE_STATES = ["pending", "running", "stopping", "stopped"]
 
@@ -206,6 +206,77 @@ class AwsProvider(Provider):
                         if e.response["Error"]["Code"] != "InvalidVolume.NotFound":
                             raise
         return actions
+
+    def check(self, nodes: list[Node]) -> list[CheckResult]:
+        results: list[CheckResult] = []
+
+        def run(name: str, fn) -> None:
+            try:
+                results.append(CheckResult(name, True, fn() or ""))
+            except Exception as e:
+                msg = e.response["Error"]["Code"] if isinstance(e, ClientError) else f"{type(e).__name__}: {e}"
+                results.append(CheckResult(name, False, msg))
+
+        def dry(call, **kw) -> str:
+            """EC2 DryRun: DryRunOperation means 'would have been allowed'."""
+            try:
+                call(DryRun=True, **kw)
+            except ClientError as e:
+                if e.response["Error"]["Code"] != "DryRunOperation":
+                    raise
+            return "permitted (dry run)"
+
+        def identity() -> str:
+            ident = boto3.client("sts").get_caller_identity()
+            return ident["Arn"]
+
+        run("aws credentials", identity)
+        if not results[0].ok:
+            return results
+
+        for region in sorted({n.location for n in nodes}):
+            ec2 = self._ec2(region)
+            tag = f"aws {region}"
+
+            def vpc() -> str:
+                vpcs = ec2.describe_vpcs(Filters=[{"Name": "isDefault", "Values": ["true"]}])["Vpcs"]
+                if not vpcs:
+                    raise RuntimeError("no default VPC in this region")
+                return vpcs[0]["VpcId"]
+
+            run(f"{tag}: default VPC", vpc)
+            run(f"{tag}: Ubuntu 22.04 AMI", lambda: self._ami(ec2))
+            for n in (n for n in nodes if n.location == region):
+
+                def offered(n=n) -> str:
+                    r = ec2.describe_instance_type_offerings(
+                        LocationType="region", Filters=[{"Name": "instance-type", "Values": [n.machine_type]}]
+                    )
+                    if not r["InstanceTypeOfferings"]:
+                        raise RuntimeError(f"{n.machine_type} not offered in {region}")
+                    return n.machine_type
+
+                run(f"{tag}: {n.name} machine type", offered)
+
+            def can_launch() -> str:
+                return dry(
+                    ec2.run_instances,
+                    ImageId=self._ami(ec2),
+                    InstanceType=next(n.machine_type for n in nodes if n.location == region),
+                    MinCount=1,
+                    MaxCount=1,
+                )
+
+            run(f"{tag}: run instances", can_launch)
+            run(
+                f"{tag}: create security group",
+                lambda: dry(ec2.create_security_group, GroupName=self._sg_name, Description="fedlab check", VpcId=vpc()),
+            )
+            run(
+                f"{tag}: import key pair",
+                lambda: dry(ec2.import_key_pair, KeyName=self._key_name, PublicKeyMaterial=self.key.public_key.encode()),
+            )
+        return results
 
     @staticmethod
     def _delete_sg(ec2, sg_id: str) -> None:
