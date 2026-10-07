@@ -15,12 +15,17 @@ def test_keypair_generated_once_with_private_perms(cfg):
 def test_ssh_config_and_nodes_json(cfg):
     key = ssh.ensure_keypair(cfg)
     infos = [
-        NodeInfo("fedlearn-aws-us-east-1", "aws", "us-east-1", "running", "1.2.3.4"),
-        NodeInfo("fedlearn-aws-eu-west-1", "aws", "eu-west-1", "stopped", None),
+        NodeInfo("fedlearn-client-aws-us-east-1", "aws", "us-east-1", "running", "1.2.3.4"),
+        NodeInfo("fedlearn-server-aws-eu-west-1", "aws", "eu-west-1", "running", "5.6.7.8"),
+        NodeInfo("fedlearn-client-gcp-us-central1-a", "gcp", "us-central1-a", "stopped", None),
     ]
     text = ssh.render_ssh_config(cfg, infos, key)
-    assert "Host fedlearn-aws-us-east-1" in text and "HostName 1.2.3.4" in text
-    assert "eu-west-1" not in text
+    assert "Host fedlearn-client-aws-us-east-1" in text and "HostName 1.2.3.4" in text
+    assert "us-central1-a" not in text
     data = json.loads(ssh.write_nodes_json(cfg, infos, key).read_text())
-    assert data["fedlearn-aws-us-east-1"]["flower"]["fleet_api"] == "1.2.3.4:9092"
-    assert data["fedlearn-aws-eu-west-1"]["flower"] is None
+    server = data["fedlearn-server-aws-eu-west-1"]
+    assert server["role"] == "server" and server["flower"]["fleet_api"] == "5.6.7.8:9092"
+    assert server["ports"] == [22, 9091, 9092, 9093]
+    assert data["fedlearn-client-aws-us-east-1"]["role"] == "client"
+    assert data["fedlearn-client-aws-us-east-1"]["ports"] == [22]
+    assert data["fedlearn-client-aws-us-east-1"]["flower"] is None  # clients don't serve Flower APIs

@@ -1,4 +1,4 @@
-"""First-boot provisioning (cloud-init): Python, uv, git, and a venv with the latest flwr."""
+"""First-boot provisioning (cloud-init): Python, uv, git, a venv with the latest flwr, and optionally the NVIDIA driver."""
 
 CLOUD_INIT = """#cloud-config
 package_update: true
@@ -15,6 +15,16 @@ runcmd:
   - [bash, -c, "touch /var/lib/fedlab-ready"]
 """
 
+# Stock Ubuntu has no NVIDIA driver. Installed before `fedlab-ready`; the node reboots once to load it.
+NVIDIA_DRIVER_STEP = """  - [bash, -c, "ubuntu-drivers install --gpgpu"]
+"""
+NVIDIA_REBOOT_STEP = """  - [bash, -c, "shutdown -r +1"]
+"""
 
-def render(ssh_user: str) -> str:
-    return CLOUD_INIT.format(user=ssh_user)
+
+def render(ssh_user: str, install_nvidia_driver: bool = False) -> str:
+    text = CLOUD_INIT.format(user=ssh_user)
+    if install_nvidia_driver:
+        marker = '  - [bash, -c, "touch /var/lib/fedlab-ready"]\n'
+        text = text.replace(marker, NVIDIA_DRIVER_STEP + marker) + NVIDIA_REBOOT_STEP
+    return text

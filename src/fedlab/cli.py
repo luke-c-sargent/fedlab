@@ -101,10 +101,11 @@ def _fmt_uptime(since: datetime | None) -> str:
 
 def _print_status(cfg: Settings, infos: list[NodeInfo]) -> None:
     table = Table()
-    for col in ("node", "state", "public ip", "uptime", "ssh"):
+    for col in ("node", "role", "state", "public ip", "uptime", "ssh"):
         table.add_column(col)
+    roles = {n.name: n.role for n in cfg.resolved_nodes()}
     for i in infos:
-        table.add_row(i.name, i.state, i.public_ip or "-", _fmt_uptime(i.running_since), f"ssh {i.name}" if i.public_ip else "-")
+        table.add_row(i.name, roles.get(i.name, "-"), i.state, i.public_ip or "-", _fmt_uptime(i.running_since), f"ssh {i.name}" if i.public_ip else "-")
     console.print(table)
     for i in infos:
         if i.running_since:

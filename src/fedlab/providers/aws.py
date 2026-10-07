@@ -38,34 +38,34 @@ class AwsProvider(Provider):
         found = [i for r in res["Reservations"] for i in r["Instances"]]
         return found[0] if found else None
 
-    def _ami(self, ec2) -> str:
+    def _ami(self, ec2, gpu: bool = False) -> str:
+        if gpu:  # Ubuntu 22.04 with NVIDIA driver + CUDA preinstalled
+            owner, pattern = "amazon", "Deep Learning Base OSS Nvidia Driver GPU AMI (Ubuntu 22.04)*"
+        else:
+            owner, pattern = "099720109477", "ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*"  # Canonical
         imgs = ec2.describe_images(
-            Owners=["099720109477"],  # Canonical
-            Filters=[
-                {"Name": "name", "Values": ["ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*"]},
-                {"Name": "state", "Values": ["available"]},
-            ],
+            Owners=[owner],
+            Filters=[{"Name": "name", "Values": [pattern]}, {"Name": "state", "Values": ["available"]}],
         )["Images"]
         if not imgs:
-            raise RuntimeError("no Ubuntu 22.04 AMI found")
+            raise RuntimeError(f"no AMI matching {pattern!r}")
         return max(imgs, key=lambda i: i["CreationDate"])["ImageId"]
 
-    @property
-    def _sg_name(self) -> str:
-        return f"{self.cfg.run_name}-sg"
+    def _sg_name(self, role: str) -> str:
+        return f"{self.cfg.run_name}-{role}-sg"
 
     @property
     def _key_name(self) -> str:
         return f"{self.cfg.run_name}-key"
 
-    def _find_sg(self, ec2) -> dict | None:
+    def _find_sg(self, ec2, role: str) -> dict | None:
         sgs = ec2.describe_security_groups(
-            Filters=[{"Name": "group-name", "Values": [self._sg_name]}, self._tag_filter]
+            Filters=[{"Name": "group-name", "Values": [self._sg_name(role)]}, self._tag_filter]
         )["SecurityGroups"]
         return sgs[0] if sgs else None
 
-    def _ensure_sg(self, ec2) -> str:
-        sg = self._find_sg(ec2)
+    def _ensure_sg(self, ec2, role: str) -> str:
+        sg = self._find_sg(ec2, role)
         if sg:
             sg_id = sg["GroupId"]
         else:
@@ -73,12 +73,12 @@ class AwsProvider(Provider):
             if not vpcs:
                 raise RuntimeError("no default VPC in this region")
             sg_id = ec2.create_security_group(
-                GroupName=self._sg_name,
-                Description=f"fedlab {self.cfg.run_name}",
+                GroupName=self._sg_name(role),
+                Description=f"fedlab {self.cfg.run_name} {role}",
                 VpcId=vpcs[0]["VpcId"],
-                TagSpecifications=[self._tags("security-group", self._sg_name)],
+                TagSpecifications=[self._tags("security-group", self._sg_name(role))],
             )["GroupId"]
-        for port in self.cfg.open_ports:
+        for port in self.cfg.ports_for(role):
             try:
                 ec2.authorize_security_group_ingress(
                     GroupId=sg_id,
@@ -113,10 +113,10 @@ class AwsProvider(Provider):
         if self._find(ec2, node):
             self.start(node)
             return
-        sg_id = self._ensure_sg(ec2)
+        sg_id = self._ensure_sg(ec2, node.role)
         self._ensure_key(ec2)
         res = ec2.run_instances(
-            ImageId=self._ami(ec2),
+            ImageId=self._ami(ec2, node.gpu),
             InstanceType=node.machine_type,
             MinCount=1,
             MaxCount=1,
@@ -184,11 +184,12 @@ class AwsProvider(Provider):
                     ec2.terminate_instances(InstanceIds=ids)
                     ec2.get_waiter("instance_terminated").wait(InstanceIds=ids)
 
-            sg = self._find_sg(ec2)
-            if sg:
-                actions.append(f"[aws {region}] delete security group {sg['GroupId']}")
-                if not dry_run:
-                    self._delete_sg(ec2, sg["GroupId"])
+            for role in ("server", "client"):
+                sg = self._find_sg(ec2, role)
+                if sg:
+                    actions.append(f"[aws {region}] delete security group {sg['GroupId']} ({role})")
+                    if not dry_run:
+                        self._delete_sg(ec2, sg["GroupId"])
 
             keys = ec2.describe_key_pairs(Filters=[self._tag_filter])["KeyPairs"]
             for k in keys:
@@ -245,7 +246,6 @@ class AwsProvider(Provider):
                 return vpcs[0]["VpcId"]
 
             run(f"{tag}: default VPC", vpc)
-            run(f"{tag}: Ubuntu 22.04 AMI", lambda: self._ami(ec2))
             for n in (n for n in nodes if n.location == region):
 
                 def offered(n=n) -> str:
@@ -256,21 +256,22 @@ class AwsProvider(Provider):
                         raise RuntimeError(f"{n.machine_type} not offered in {region}")
                     return n.machine_type
 
+                def can_launch(n=n) -> str:
+                    # Also surfaces vCPU quota problems (VcpuLimitExceeded), common for G/VT GPU types.
+                    return dry(
+                        ec2.run_instances,
+                        ImageId=self._ami(ec2, n.gpu),
+                        InstanceType=n.machine_type,
+                        MinCount=1,
+                        MaxCount=1,
+                    )
+
+                run(f"{tag}: {n.name} AMI", lambda n=n: self._ami(ec2, n.gpu))
                 run(f"{tag}: {n.name} machine type", offered)
-
-            def can_launch() -> str:
-                return dry(
-                    ec2.run_instances,
-                    ImageId=self._ami(ec2),
-                    InstanceType=next(n.machine_type for n in nodes if n.location == region),
-                    MinCount=1,
-                    MaxCount=1,
-                )
-
-            run(f"{tag}: run instances", can_launch)
+                run(f"{tag}: {n.name} launch permission + quota", can_launch)
             run(
                 f"{tag}: create security group",
-                lambda: dry(ec2.create_security_group, GroupName=self._sg_name, Description="fedlab check", VpcId=vpc()),
+                lambda: dry(ec2.create_security_group, GroupName=self._sg_name("check"), Description="fedlab check", VpcId=vpc()),
             )
             run(
                 f"{tag}: import key pair",

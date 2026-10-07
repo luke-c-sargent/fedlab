@@ -3,27 +3,35 @@ import pytest
 from fedlab.config import Settings, load_settings
 
 
-def test_defaults_give_three_named_nodes(cfg):
+def test_defaults_give_one_server_and_two_gpu_clients(cfg):
     nodes = cfg.resolved_nodes()
-    assert [n.name for n in nodes] == [
-        "fedlearn-aws-us-east-1",
-        "fedlearn-aws-eu-west-1",
-        "fedlearn-gcp-us-central1-a",
+    assert [(n.name, n.role) for n in nodes] == [
+        ("fedlearn-server-aws-eu-west-1", "server"),
+        ("fedlearn-client-aws-us-east-1", "client"),
+        ("fedlearn-client-gcp-us-central1-a", "client"),
     ]
-    assert [n.machine_type for n in nodes] == ["m5.xlarge", "m5.xlarge", "n2-standard-4"]
+    assert [n.machine_type for n in nodes] == ["r6i.large", "g6e.2xlarge", "n1-highmem-8"]
+    assert [n.gpu for n in nodes] == [False, True, True]
+    assert nodes[2].accelerator == "nvidia-tesla-t4"
     assert all(n.disk_gb == 200 for n in nodes)
+
+
+def test_exactly_one_server_required():
+    for nodes in ([], [{"provider": "aws", "location": "us-east-1"}], [{"provider": "aws", "location": "a", "role": "server"}, {"provider": "aws", "location": "b", "role": "server"}]):
+        with pytest.raises(ValueError, match="exactly one"):
+            Settings(nodes=nodes).resolved_nodes()
 
 
 def test_yaml_and_env_override(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "c.yaml").write_text(
-        "name_prefix: lab\nnodes:\n  - {provider: aws, location: us-west-2, machine_type: m5.2xlarge, disk_gb: 500}\n"
+        "name_prefix: lab\nnodes:\n  - {provider: aws, location: us-west-2, role: server, machine_type: m5.2xlarge, disk_gb: 500}\n"
     )
     monkeypatch.setenv("FEDLAB_DISK_GB", "100")
     monkeypatch.setenv("GCP_PROJECT", "proj")
     s = load_settings(tmp_path / "c.yaml")
     (n,) = s.resolved_nodes()
-    assert (n.name, n.machine_type, n.disk_gb) == ("lab-aws-us-west-2", "m5.2xlarge", 500)
+    assert (n.name, n.machine_type, n.disk_gb) == ("lab-server-aws-us-west-2", "m5.2xlarge", 500)
     assert s.disk_gb == 100 and s.gcp_project == "proj"
 
 
@@ -34,3 +42,11 @@ def test_ports_always_include_ssh():
 def test_invalid_run_name():
     with pytest.raises(ValueError):
         Settings(run_name="Bad_Name")
+
+
+def test_cloud_init_installs_nvidia_driver_only_when_asked():
+    from fedlab import cloud_init
+
+    assert "ubuntu-drivers" not in cloud_init.render("ubuntu")
+    gpu = cloud_init.render("ubuntu", install_nvidia_driver=True)
+    assert gpu.index("ubuntu-drivers") < gpu.index("fedlab-ready") < gpu.index("shutdown -r")

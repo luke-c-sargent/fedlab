@@ -1,59 +1,102 @@
 # fedlab
 
-Harness for launching (and cleanly tearing down) VMs on AWS and GCP for federated-learning tests with [Flower](https://flower.ai).
+fedlab starts and removes VMs on AWS and GCP for federated-learning tests with [Flower](https://flower.ai).
 
-Default fleet (3 nodes, each 4 vCPU / 16 GB / 200 GB, Ubuntu 22.04, on-demand):
+The default fleet has one server and two GPU clients. Each VM has a 200 GB disk and runs Ubuntu 22.04 on-demand.
 
-| node | where | type |
-|---|---|---|
-| `fedlearn-aws-us-east-1` | AWS us-east-1 | m5.xlarge, gp3 |
-| `fedlearn-aws-eu-west-1` | AWS eu-west-1 | m5.xlarge, gp3 |
-| `fedlearn-gcp-us-central1-a` | GCP us-central1-a | n2-standard-4, pd-balanced |
+| node | role | where | type | spec |
+|---|---|---|---|---|
+| `fedlearn-server-aws-eu-west-1` | server | AWS eu-west-1 | r6i.large | 2 vCPU / 16 GB |
+| `fedlearn-client-aws-us-east-1` | client | AWS us-east-1 | g6e.2xlarge | 8 vCPU / 64 GB, 1x L40S |
+| `fedlearn-client-gcp-us-central1-a` | client | GCP us-central1-a | n1-highmem-8 + T4 | 8 vCPU / 52 GB, 1x T4 |
+
+Exactly one node must have `role: server`. A g6e.2xlarge costs about $2.2 per hour. Stop or destroy GPU nodes when they are idle.
 
 ## Setup
 
-```sh
-uv sync
-cp .env.example .env              # AWS keys (or AWS_PROFILE) + GCP_PROJECT
-cp config.example.yaml config.yaml  # optional; defaults match the table above
-gcloud auth application-default login   # GCP auth (ADC)
-```
+1. Install the packages: `uv sync`
+2. Copy `.env.example` to `.env`. Add the AWS keys (or `AWS_PROFILE`) and `GCP_PROJECT`.
+3. Log in to GCP: `gcloud auth application-default login`
+4. Optional: copy `config.example.yaml` to `config.yaml` to change the nodes. The defaults match the table.
 
-## Usage
+Environment variables `FEDLAB_<KEY>` and `.env` override `config.yaml`.
 
-```sh
-uv run fedlab up                  # create everything (idempotent), wait for SSH
-uv run fedlab status              # states, IPs, uptime; refreshes local files
-uv run fedlab stop [-n NODE]      # stop VMs (disks still bill)
-uv run fedlab start [-n NODE]     # start VMs; new IPs are picked up automatically
-uv run fedlab ssh fedlearn-aws-us-east-1
-uv run fedlab destroy --dry-run   # list what would be deleted
-uv run fedlab destroy             # delete everything tagged for this run
-```
+## Commands
 
-### Changing IPs
+Run each command with `uv run fedlab <command>`.
 
-Public IPs are ephemeral (no Elastic/static IPs, so no idle-IP cost) and change after stop/start. After `up`, `start`, `stop` and `status`, fedlab regenerates:
+| command | action |
+|---|---|
+| `check` | Test credentials, permissions, quotas, and instance types. It creates nothing. |
+| `up` | Create all VMs, start stopped VMs, and wait for SSH. You can run it again safely. |
+| `status` | Show state, IP, and uptime. It also refreshes the local files. |
+| `ping` | Test SSH login on each node. |
+| `start`, `stop` | Start or stop VMs. Stopped VMs still pay for their disks. |
+| `ssh <node> [command]` | Open SSH to a node with the repo key. |
+| `destroy` | Delete all resources of this run. Add `--dry-run` to list them only. |
 
-- `.fedlab/nodes.json` – per-node IP, SSH user/key, and Flower addresses (Fleet API `:9092`, ServerAppIo `:9091`, Exec API `:9093`). Read this from your Flower scripts.
-- `~/.ssh/config.d/fedlab` – so `ssh fedlearn-aws-us-east-1` works. On first run fedlab asks before adding `Include ~/.ssh/config.d/fedlab` to the top of `~/.ssh/config`.
+`up`, `start`, `stop`, `ping`, and `check` accept `-n <node>` (repeat it for more nodes). `destroy` ignores `-n`. All commands accept `-c <file>` for a config file.
 
-### Provisioning
+Always run `destroy --dry-run` first and read the list.
 
-cloud-init installs Python 3, `uv`, `git`, and a venv at `~/fl` with the latest `flwr` (`source ~/fl/bin/activate`). It runs after SSH comes up; wait for `/var/lib/fedlab-ready` (`ssh <node> 'cloud-init status --wait'`).
+## Local files
 
-### Security
+Public IPs change after each stop and start. After `up`, `start`, `stop`, and `status`, fedlab rewrites these files:
 
-Ports 22, 9091–9093 are open to **0.0.0.0/0**. SSH is key-only (a dedicated ed25519 key in `.fedlab/`). Flower gRPC is plaintext/unauthenticated unless you enable TLS in Flower. Host-key checking is disabled in the generated SSH config because IPs are reused.
+- `.fedlab/nodes.json` contains the role, IP, SSH user, SSH key, and open ports of each node.
+- `~/.ssh/config.d/fedlab` lets you use `ssh <node>`. On first run, fedlab asks before it adds an `Include` line to `~/.ssh/config`.
 
-### Teardown & scope
+The same directory holds the SSH keypair `id_ed25519`. `destroy` keeps it.
 
-Every resource is tagged/labelled `fedlab-run=<run_name>`. `destroy` only touches tagged resources, in the locations listed in your config (if you remove a region from the config, destroy it first). It is idempotent. The local keypair is kept.
+## Flower endpoints
 
-Costs: stopped VMs still pay for their 200 GB disks.
+Only the server entry in `nodes.json` has a `flower` block. The block holds the addresses of the three Flower APIs of the SuperLink:
+
+| key | port | used by |
+|---|---|---|
+| `fleet_api` | 9092 | SuperNodes on the clients |
+| `serverappio_api` | 9091 | ServerApp processes |
+| `exec_api` | 9093 | `flwr run` |
+
+For clients, `flower` is `null`. Clients connect out to `fleet_api` and accept no Flower connections.
+
+fedlab does not start Flower. The server IP changes after each stop and start, so read `nodes.json` again.
+
+## Provisioning
+
+cloud-init installs Python 3, `uv`, `git`, and a venv with the latest `flwr` at `~/fl`. It runs after SSH starts.
+
+To wait for it, run `ssh <node> 'cloud-init status --wait'`. The file `/var/lib/fedlab-ready` shows that it is done.
+
+## GPUs
+
+- **AWS:** `gpu: true` selects the "Deep Learning Base OSS Nvidia Driver GPU AMI (Ubuntu 22.04)". It includes the driver and CUDA.
+- **GCP:** The image is stock Ubuntu. cloud-init runs `ubuntu-drivers install --gpgpu`, then reboots the node once. This starts about one minute after first boot. After the reboot, run `nvidia-smi`.
+- **GCP:** `accelerator:` attaches a GPU to an N1 machine. fedlab sets the maintenance policy to terminate, because GPU VMs cannot live-migrate.
+
+New accounts often have no GPU quota. `check` tests the AWS vCPU quota with a launch dry run. It also tests the GCP GPU quota.
+
+## Ports and security
+
+| role | open ports (from 0.0.0.0/0) |
+|---|---|
+| server | 22, 9091, 9092, 9093 (set with `ports`) |
+| client | 22 |
+
+SSH accepts the repo key only. Flower gRPC is not encrypted and has no login, unless you enable TLS in Flower. The generated SSH config does not check host keys, because IPs are reused.
+
+## Teardown
+
+fedlab tags every resource with `fedlab-run=<run_name>`. `destroy` removes only tagged resources, in the locations of your config. These are instances, disks, firewall rules or security groups, and AWS key pairs.
+
+GCP firewall rules cannot carry labels. `destroy` removes them by name: `<run_name>-server` and `<run_name>-client`.
+
+- Use a unique `run_name`. Two stacks with the same name delete each other.
+- If you remove a region from the config, destroy its resources first.
+- `destroy` can run again safely.
+
+`status` warns when a node runs for more than `warn_after_days` (default 3).
 
 ## Tests
 
-```sh
-uv run pytest      # mocked (moto for AWS); no cloud calls
-```
+Run `uv run pytest`. The tests use mocks (moto for AWS) and make no cloud calls.

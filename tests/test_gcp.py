@@ -22,15 +22,21 @@ def test_up_creates_firewall_and_instance_with_expected_shape(cfg):
         fc.return_value.get.side_effect = NotFound("x")
         prov.up(node)
     fw = fc.return_value.insert.call_args.kwargs["firewall_resource"]
-    assert list(fw.allowed[0].ports) == ["22", "9091", "9092", "9093"]
+    assert fw.name == "fedlearn-client" and list(fw.target_tags) == ["fedlearn-client"]
+    assert list(fw.allowed[0].ports) == ["22"]  # clients expose SSH only
     assert list(fw.source_ranges) == ["0.0.0.0/0"]
     inst = ic.return_value.insert.call_args.kwargs["instance_resource"]
-    assert inst.name == "fedlearn-gcp-us-central1-a"
-    assert inst.machine_type.endswith("n2-standard-4")
+    assert list(inst.tags.items) == ["fedlearn-client"]
+    assert inst.name == "fedlearn-client-gcp-us-central1-a"
+    assert inst.machine_type.endswith("n1-highmem-8")
+    (acc,) = inst.guest_accelerators
+    assert acc.accelerator_type.endswith("us-central1-a/acceleratorTypes/nvidia-tesla-t4") and acc.accelerator_count == 1
+    assert inst.scheduling.on_host_maintenance == "TERMINATE"
     assert inst.disks[0].initialize_params.disk_size_gb == 200
     assert inst.labels["fedlab-run"] == "fedlearn"
     keys = {i.key: i.value for i in inst.metadata.items}
     assert keys["ssh-keys"].startswith("ubuntu:ssh-ed25519 ") and "#cloud-config" in keys["user-data"]
+    assert "ubuntu-drivers install" in keys["user-data"]
 
 
 def test_describe_maps_state_and_ip(cfg):
@@ -62,3 +68,12 @@ def test_destroy_dry_run_lists_by_label_using_request_objects(cfg):
     assert dc.return_value.list.call_args.kwargs["request"].filter == req.filter
     assert actions == ["[gcp us-central1-a] delete instance vm1", "[gcp us-central1-a] delete leftover disk disk1"]
     ic.return_value.delete.assert_not_called()
+
+
+def test_server_firewall_opens_flower_ports(cfg):
+    prov = _prov(cfg)
+    with patch.object(gcpmod.compute_v1, "FirewallsClient") as fc:
+        fc.return_value.get.side_effect = NotFound("x")
+        prov._ensure_firewall("server")
+    fw = fc.return_value.insert.call_args.kwargs["firewall_resource"]
+    assert fw.name == "fedlearn-server" and list(fw.allowed[0].ports) == ["22", "9091", "9092", "9093"]

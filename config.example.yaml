@@ -6,11 +6,14 @@ name_prefix: fedlearn       # node names are <prefix>-<provider>-<location>
 aws_machine_type: m5.xlarge       # 4 vCPU / 16 GB
 gcp_machine_type: n2-standard-4   # 4 vCPU / 16 GB
 disk_gb: 200
-ports: [22, 9091, 9092, 9093]     # opened to 0.0.0.0/0 (22 is always included)
+ports: [22, 9091, 9092, 9093]     # opened to 0.0.0.0/0 on the server only (clients open only 22)
 warn_after_days: 3                # `status` warns when a node has been running this long
 
+# Exactly one node must have role: server. Node names are <prefix>-<role>-<provider>-<location>.
+# gpu: true      AWS: NVIDIA-driver AMI. GCP: driver installed on first boot (node reboots once).
+# accelerator:   GCP only, attaches a GPU to an N1 machine (omit for G2/A2, which include one).
 nodes:
-  - {provider: aws, location: us-east-1}
-  - {provider: aws, location: eu-west-1}
-  - {provider: gcp, location: us-central1-a}   # GCP location is a zone
-  # Per-node overrides: machine_type: m5.2xlarge, disk_gb: 500
+  - {role: server, provider: aws, location: eu-west-1, machine_type: r6i.large}                  # 2 vCPU / 16 GB
+  - {role: client, provider: aws, location: us-east-1, machine_type: g6e.2xlarge, gpu: true}     # 8 vCPU / 64 GB, L40S
+  - {role: client, provider: gcp, location: us-central1-a, machine_type: n1-highmem-8, gpu: true, accelerator: nvidia-tesla-t4}  # 8 vCPU / 52 GB, T4
+  # Per-node overrides: disk_gb: 500

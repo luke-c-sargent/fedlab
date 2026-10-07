@@ -16,9 +16,9 @@ def test_check_passes_against_moto_without_creating_anything(tmp_path, monkeypat
 
     from fedlab.providers.aws import AwsProvider
 
-    monkeypatch.setattr(AwsProvider, "_ami", lambda self, ec2: ec2.describe_images()["Images"][0]["ImageId"])
+    monkeypatch.setattr(AwsProvider, "_ami", lambda self, ec2, gpu=False: ec2.describe_images()["Images"][0]["ImageId"])
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "config.yaml").write_text("nodes:\n  - {provider: aws, location: us-east-1}\n")
+    (tmp_path / "config.yaml").write_text("nodes:\n  - {provider: aws, location: us-east-1, role: server}\n")
     with mock_aws():
         r = CliRunner().invoke(app, ["check"])
         assert r.exit_code == 0, r.output
@@ -34,7 +34,7 @@ def test_check_fails_on_bad_instance_type(tmp_path, monkeypatch):
 
     monkeypatch.chdir(tmp_path)
     (tmp_path / "config.yaml").write_text(
-        "nodes:\n  - {provider: aws, location: us-east-1, machine_type: nope.huge}\n"
+        "nodes:\n  - {provider: aws, location: us-east-1, role: server, machine_type: nope.huge}\n"
     )
     with mock_aws():
         r = CliRunner().invoke(app, ["check"])
@@ -47,7 +47,7 @@ def test_ping_reports_per_node_and_exits_nonzero_on_failure(tmp_path, monkeypatc
 
     monkeypatch.chdir(tmp_path)
     (tmp_path / "config.yaml").write_text(
-        "nodes:\n  - {provider: aws, location: us-east-1}\n  - {provider: aws, location: eu-west-1}\n"
+        "nodes:\n  - {provider: aws, location: us-east-1, role: server}\n  - {provider: aws, location: eu-west-1}\n"
     )
 
     class P:

@@ -18,8 +18,11 @@ _SLUG = re.compile(r"^[a-z][a-z0-9-]{0,30}$")
 class NodeSpec(BaseModel):
     provider: Literal["aws", "gcp"]
     location: str  # AWS region or GCP zone
+    role: Literal["server", "client"] = "client"
     machine_type: str | None = None
     disk_gb: int | None = None
+    gpu: bool = False  # AWS: use the NVIDIA-driver AMI. GCP: install the driver on first boot.
+    accelerator: str | None = None  # GCP only: GPU to attach to an N1 machine, e.g. nvidia-tesla-t4
 
 
 @dataclass(frozen=True)
@@ -29,15 +32,23 @@ class Node:
     name: str
     provider: str
     location: str
+    role: str
     machine_type: str
     disk_gb: int
+    gpu: bool = False
+    accelerator: str | None = None
 
 
 def _default_nodes() -> list[NodeSpec]:
     return [
-        NodeSpec(provider="aws", location="us-east-1"),
-        NodeSpec(provider="aws", location="eu-west-1"),
-        NodeSpec(provider="gcp", location="us-central1-a"),
+        # server: 2 vCPU / 16 GB
+        NodeSpec(role="server", provider="aws", location="eu-west-1", machine_type="r6i.large"),
+        # GPU clients: ~8 vCPU / 52-64 GB
+        NodeSpec(role="client", provider="aws", location="us-east-1", machine_type="g6e.2xlarge", gpu=True),  # 8 vCPU / 64 GB, L40S
+        NodeSpec(
+            role="client", provider="gcp", location="us-central1-a", machine_type="n1-highmem-8",  # 8 vCPU / 52 GB
+            gpu=True, accelerator="nvidia-tesla-t4",
+        ),
     ]
 
 
@@ -51,7 +62,7 @@ class Settings(BaseSettings):
     aws_machine_type: str = "m5.xlarge"
     gcp_machine_type: str = "n2-standard-4"
     disk_gb: int = 200
-    ports: list[int] = [22, 9091, 9092, 9093]
+    ports: list[int] = [22, 9091, 9092, 9093]  # opened on the server only
     warn_after_days: float = 3
     ssh_user: str = "ubuntu"
     gcp_project: str | None = Field(
@@ -70,7 +81,12 @@ class Settings(BaseSettings):
 
     @property
     def open_ports(self) -> list[int]:
+        """Ports opened on the server (`ports`, plus SSH)."""
         return sorted({22, *self.ports})
+
+    def ports_for(self, role: str) -> list[int]:
+        """Clients only expose SSH; they connect out to the server."""
+        return self.open_ports if role == "server" else [22]
 
     @property
     def key_path(self) -> Path:
@@ -86,16 +102,22 @@ class Settings(BaseSettings):
             default_mt = self.aws_machine_type if n.provider == "aws" else self.gcp_machine_type
             out.append(
                 Node(
-                    name=f"{self.name_prefix}-{n.provider}-{n.location}",
+                    name=f"{self.name_prefix}-{n.role}-{n.provider}-{n.location}",
                     provider=n.provider,
                     location=n.location,
+                    role=n.role,
                     machine_type=n.machine_type or default_mt,
                     disk_gb=n.disk_gb or self.disk_gb,
+                    gpu=n.gpu,
+                    accelerator=n.accelerator,
                 )
             )
         names = [n.name for n in out]
         if len(set(names)) != len(names):
             raise ValueError(f"duplicate node names: {names}")
+        servers = [n.name for n in out if n.role == "server"]
+        if len(servers) != 1:
+            raise ValueError(f"exactly one node must have role: server (found {servers})")
         return out
 
 

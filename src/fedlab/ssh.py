@@ -110,24 +110,25 @@ def write_ssh_config(cfg: Settings, infos: list[NodeInfo], key: Keypair) -> Path
 
 
 def write_nodes_json(cfg: Settings, infos: list[NodeInfo], key: Keypair) -> Path:
-    ports = cfg.open_ports
+    roles = {n.name: n.role for n in cfg.resolved_nodes()}
     data = {
         i.name: {
+            "role": roles.get(i.name),
             "provider": i.provider,
             "location": i.location,
             "state": i.state,
             "public_ip": i.public_ip,
             "ssh_user": cfg.ssh_user,
             "ssh_key": str(key.private_path),
-            "ports": ports,
-            # Flower defaults: Fleet API 9092, ServerAppIo 9091, Exec API 9093
+            "ports": cfg.ports_for(roles.get(i.name, "client")),
+            # Flower defaults: Fleet API 9092, ServerAppIo 9091, Exec API 9093 (server only)
             "flower": (
                 {
                     "fleet_api": f"{i.public_ip}:9092",
                     "serverappio_api": f"{i.public_ip}:9091",
                     "exec_api": f"{i.public_ip}:9093",
                 }
-                if i.public_ip
+                if i.public_ip and roles.get(i.name) == "server"
                 else None
             ),
         }

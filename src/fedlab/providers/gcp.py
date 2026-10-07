@@ -29,13 +29,11 @@ class GcpProvider(Provider):
             raise RuntimeError("GCP project not set: export GCP_PROJECT or set gcp_project in config")
         return self.cfg.gcp_project
 
-    @property
-    def _fw_name(self) -> str:
-        return f"{self.cfg.run_name}-allow"
+    def _fw_name(self, role: str) -> str:
+        return f"{self.cfg.run_name}-{role}"
 
-    @property
-    def _net_tag(self) -> str:
-        return self.cfg.run_name
+    def _net_tag(self, role: str) -> str:
+        return f"{self.cfg.run_name}-{role}"
 
     def _get(self, node: Node):
         try:
@@ -45,20 +43,35 @@ class GcpProvider(Provider):
         except NotFound:
             return None
 
-    def _ensure_firewall(self) -> None:
+    @staticmethod
+    def _gpu_args(node: Node) -> dict:
+        """GPU VMs can't live-migrate, so maintenance must terminate them; N1 machines also need a GPU attached."""
+        if not (node.gpu or node.accelerator):
+            return {}
+        args: dict = {"scheduling": compute_v1.Scheduling(on_host_maintenance="TERMINATE", automatic_restart=True)}
+        if node.accelerator:  # G2/A2 machine types have their GPU built in
+            args["guest_accelerators"] = [
+                compute_v1.AcceleratorConfig(
+                    accelerator_type=f"zones/{node.location}/acceleratorTypes/{node.accelerator}",
+                    accelerator_count=1,
+                )
+            ]
+        return args
+
+    def _ensure_firewall(self, role: str) -> None:
         fw = compute_v1.FirewallsClient()
         rule = compute_v1.Firewall(
-            name=self._fw_name,
+            name=self._fw_name(role),
             network="global/networks/default",
             direction="INGRESS",
             source_ranges=["0.0.0.0/0"],
-            target_tags=[self._net_tag],
-            allowed=[compute_v1.Allowed(I_p_protocol="tcp", ports=[str(p) for p in self.cfg.open_ports])],
+            target_tags=[self._net_tag(role)],
+            allowed=[compute_v1.Allowed(I_p_protocol="tcp", ports=[str(p) for p in self.cfg.ports_for(role)])],
             description=f"fedlab {self.cfg.run_name}",
         )
         try:
-            fw.get(project=self.project, firewall=self._fw_name)
-            fw.update(project=self.project, firewall=self._fw_name, firewall_resource=rule).result()
+            fw.get(project=self.project, firewall=self._fw_name(role))
+            fw.update(project=self.project, firewall=self._fw_name(role), firewall_resource=rule).result()
         except NotFound:
             fw.insert(project=self.project, firewall_resource=rule).result()
 
@@ -67,13 +80,13 @@ class GcpProvider(Provider):
         if self._get(node):
             self.start(node)
             return
-        self._ensure_firewall()
+        self._ensure_firewall(node.role)
         labels = {TAG_KEY: self.cfg.run_name}
         inst = compute_v1.Instance(
             name=node.name,
             machine_type=f"zones/{node.location}/machineTypes/{node.machine_type}",
-            labels=labels,
-            tags=compute_v1.Tags(items=[self._net_tag]),
+            labels={**labels, "fedlab-role": node.role},
+            tags=compute_v1.Tags(items=[self._net_tag(node.role)]),
             disks=[
                 compute_v1.AttachedDisk(
                     boot=True,
@@ -94,12 +107,13 @@ class GcpProvider(Provider):
                     ],
                 )
             ],
+            **self._gpu_args(node),
             metadata=compute_v1.Metadata(
                 items=[
                     compute_v1.Items(
                         key="ssh-keys", value=f"{self.cfg.ssh_user}:{self.key.public_key} fedlab"
                     ),
-                    compute_v1.Items(key="user-data", value=cloud_init.render(self.cfg.ssh_user)),
+                    compute_v1.Items(key="user-data", value=cloud_init.render(self.cfg.ssh_user, install_nvidia_driver=node.gpu)),
                 ]
             ),
         )
@@ -161,14 +175,25 @@ class GcpProvider(Provider):
                     except NotFound:
                         pass
         fw = compute_v1.FirewallsClient()
-        try:
-            fw.get(project=self.project, firewall=self._fw_name)
-            actions.append(f"[gcp] delete firewall rule {self._fw_name}")
-            if not dry_run:
-                fw.delete(project=self.project, firewall=self._fw_name).result()
-        except NotFound:
-            pass
+        for role in ("server", "client"):
+            try:
+                fw.get(project=self.project, firewall=self._fw_name(role))
+                actions.append(f"[gcp] delete firewall rule {self._fw_name(role)}")
+                if not dry_run:
+                    fw.delete(project=self.project, firewall=self._fw_name(role)).result()
+            except NotFound:
+                pass
         return actions
+
+    def _gpu_quota(self, node: Node) -> str:
+        metric = f"NVIDIA_{node.accelerator.split('-')[-1].upper()}_GPUS"
+        region = node.location.rsplit("-", 1)[0]
+        for q in compute_v1.RegionsClient().get(project=self.project, region=region).quotas:
+            if q.metric == metric:
+                if q.limit - q.usage < 1:
+                    raise RuntimeError(f"{metric} quota in {region} exhausted ({q.usage:.0f}/{q.limit:.0f})")
+                return f"{metric} {q.usage:.0f}/{q.limit:.0f} used in {region}"
+        raise RuntimeError(f"no {metric} quota entry in {region}")
 
     def check(self, nodes: list[Node]) -> list[CheckResult]:
         import google.auth
@@ -196,6 +221,14 @@ class GcpProvider(Provider):
             lambda: compute_v1.ImagesClient().get_from_family(project="ubuntu-os-cloud", family="ubuntu-2204-lts").name,
         )
         for n in nodes:
+            if n.accelerator:
+                run(
+                    f"gcp {n.location}: {n.name} accelerator {n.accelerator}",
+                    lambda n=n: compute_v1.AcceleratorTypesClient().get(
+                        project=self.project, zone=n.location, accelerator_type=n.accelerator
+                    ).name,
+                )
+                run(f"gcp {n.location}: {n.name} GPU quota", lambda n=n: self._gpu_quota(n))
             run(
                 f"gcp {n.location}: {n.name} machine type",
                 lambda n=n: compute_v1.MachineTypesClient().get(
