@@ -1,4 +1,4 @@
-"""fedlab CLI: check / up / status / start / stop / ssh / destroy."""
+"""fedlab CLI: check / ping / up / status / start / stop / ssh / destroy."""
 
 from __future__ import annotations
 
@@ -143,6 +143,28 @@ def check(config: Optional[Path] = ConfigOpt, node: Optional[list[str]] = NodeOp
         console.print(f"[red]{failed} check(s) failed[/]")
         raise typer.Exit(1)
     console.print("[green]All checks passed.[/]")
+
+
+@app.command()
+def ping(config: Optional[Path] = ConfigOpt, node: Optional[list[str]] = NodeOpt):
+    """Check SSH reachability and key auth on each node of a running stack. Read-only."""
+    ctx = Ctx(config, node)
+
+    def probe(n: Node) -> tuple[Node, NodeInfo, tuple[bool, str]]:
+        info = ctx.for_node(n).describe(n)
+        if not info.public_ip:
+            return n, info, (False, f"no public IP (state: {info.state})")
+        return n, info, sshmod.probe_ssh(info.public_ip, ctx.cfg.ssh_user, ctx.key)
+
+    with ThreadPoolExecutor() as ex:
+        results = list(ex.map(probe, ctx.nodes))
+    failed = 0
+    for n, info, (ok, detail) in results:
+        failed += not ok
+        mark = "[green]ok  [/]" if ok else "[red]FAIL[/]"
+        console.print(f"{mark} {n.name} [dim]{info.public_ip or '-'} {detail}[/]", highlight=False)
+    if failed:
+        raise typer.Exit(1)
 
 
 @app.command()

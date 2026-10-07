@@ -145,7 +145,7 @@ class GcpProvider(Provider):
         disks = compute_v1.DisksClient()
         for zone in sorted({n.location for n in nodes}):
             ops = []
-            for i in instances.list(project=self.project, zone=zone, filter=flt):
+            for i in instances.list(request=compute_v1.ListInstancesRequest(project=self.project, zone=zone, filter=flt)):
                 actions.append(f"[gcp {zone}] delete instance {i.name}")
                 if not dry_run:
                     ops.append(
@@ -153,7 +153,7 @@ class GcpProvider(Provider):
                     )
             for op in ops:
                 op.result()
-            for d in disks.list(project=self.project, zone=zone, filter=flt):
+            for d in disks.list(request=compute_v1.ListDisksRequest(project=self.project, zone=zone, filter=flt)):
                 actions.append(f"[gcp {zone}] delete leftover disk {d.name}")
                 if not dry_run:
                     try:

@@ -42,3 +42,23 @@ def test_describe_maps_state_and_ip(cfg):
         inst.network_interfaces = []
         info = prov.describe(node)
     assert info.state == "stopped" and info.public_ip is None
+
+
+def test_destroy_dry_run_lists_by_label_using_request_objects(cfg):
+    prov = _prov(cfg)
+    node = cfg.resolved_nodes()[2]
+    inst, disk = MagicMock(), MagicMock()
+    inst.name, disk.name = "vm1", "disk1"
+    with patch.object(gcpmod.compute_v1, "InstancesClient") as ic, patch.object(
+        gcpmod.compute_v1, "DisksClient"
+    ) as dc, patch.object(gcpmod.compute_v1, "FirewallsClient") as fc:
+        ic.return_value.list.return_value = [inst]
+        dc.return_value.list.return_value = [disk]
+        fc.return_value.get.side_effect = NotFound("x")
+        actions = prov.destroy([node], dry_run=True)
+    # list() has no flattened `filter` kwarg; it must go through a request object
+    req = ic.return_value.list.call_args.kwargs["request"]
+    assert req.filter == "labels.fedlab-run = fedlearn" and req.zone == node.location
+    assert dc.return_value.list.call_args.kwargs["request"].filter == req.filter
+    assert actions == ["[gcp us-central1-a] delete instance vm1", "[gcp us-central1-a] delete leftover disk disk1"]
+    ic.return_value.delete.assert_not_called()

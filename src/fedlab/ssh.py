@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import socket
+import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -149,3 +150,22 @@ def wait_for_ssh(host: str, timeout: float = 300, port: int = 22) -> bool:
             pass
         time.sleep(5)
     return False
+
+
+def probe_ssh(host: str, user: str, key: Keypair, timeout: float = 10) -> tuple[bool, str]:
+    """One-shot reachability + auth check: runs `true` over SSH with the repo key. Returns (ok, detail)."""
+    cmd = [
+        "ssh", "-i", str(key.private_path), "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes",
+        "-o", f"ConnectTimeout={int(timeout)}", "-o", "StrictHostKeyChecking=no",
+        "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR", f"{user}@{host}", "true",
+    ]
+    start = time.monotonic()
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 5)
+    except subprocess.TimeoutExpired:
+        return False, "timed out"
+    except FileNotFoundError:
+        return False, "`ssh` not found on PATH"
+    if r.returncode == 0:
+        return True, f"{(time.monotonic() - start) * 1000:.0f} ms"
+    return False, (r.stderr.strip().splitlines() or [f"ssh exited {r.returncode}"])[-1]
