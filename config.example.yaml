@@ -1,0 +1,16 @@
+# Copy to config.yaml (gitignored). Every key is optional; values below are the defaults.
+# Env vars (FEDLAB_<KEY>) and .env override this file.
+
+run_name: fedlearn          # tags every resource (fedlab-run=<run_name>); destroy only touches these
+name_prefix: fedlearn       # node names are <prefix>-<provider>-<location>
+aws_machine_type: m5.xlarge       # 4 vCPU / 16 GB
+gcp_machine_type: n2-standard-4   # 4 vCPU / 16 GB
+disk_gb: 200
+ports: [22, 9091, 9092, 9093]     # opened to 0.0.0.0/0 (22 is always included)
+warn_after_days: 3                # `status` warns when a node has been running this long
+
+nodes:
+  - {provider: aws, location: us-east-1}
+  - {provider: aws, location: eu-west-1}
+  - {provider: gcp, location: us-central1-a}   # GCP location is a zone
+  # Per-node overrides: machine_type: m5.2xlarge, disk_gb: 500

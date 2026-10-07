@@ -1,0 +1,29 @@
+[project]
+name = "fedlab"
+version = "0.1.0"
+description = "Harness for launching and tearing down multi-cloud VMs for federated learning (Flower) tests"
+requires-python = ">=3.11"
+dependencies = [
+    "boto3>=1.34",
+    "google-cloud-compute>=1.19",
+    "pydantic>=2.6",
+    "pydantic-settings[yaml]>=2.2",
+    "typer>=0.12",
+    "cryptography>=42",
+]
+
+[dependency-groups]
+dev = ["pytest>=8", "moto[ec2]>=5"]
+
+[project.scripts]
+fedlab = "fedlab.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/fedlab"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

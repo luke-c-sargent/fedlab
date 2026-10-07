@@ -1,0 +1,8 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+config.yaml
+.fedlab/
+.pytest_cache/
+dist/
