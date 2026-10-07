@@ -14,21 +14,22 @@ One server and two GPU clients. Each VM has a 200 GB disk and runs Ubuntu 22.04 
 | `fedlearn-client-aws-us-east-1` | client | tcga | AWS us-east-1 | g4dn.4xlarge | 16 vCPU / 64 GB, 1x T4 |
 | `fedlearn-client-gcp-us-central1-a` | client | gtex | GCP us-central1-a | n1-highmem-8 + T4 | 8 vCPU / 52 GB, 1x T4 |
 
-Exactly one node must have `role: server`. A client with a `site` holds that site's data. The GPU clients cost about $1.20 per hour each. `destroy` the fleet when it is idle.
+Exactly one node must have `role: server`. A client with a `site` holds the data of that site. Approximate on-demand prices: the AWS client costs $1.20 per hour, the GCP client $0.85, and the server $0.13. Destroy the fleet when it is idle.
 
 ## Setup
 
-1. Install the packages: `uv sync`
-2. Copy `.env.example` to `.env`. Add the AWS keys (or `AWS_PROFILE`) and `GCP_PROJECT`.
-3. Log in to GCP: `gcloud auth application-default login`
-4. Copy `config.example.yaml` to `config.yaml`. Set `module` and `module_options`.
+1. Make sure that `ssh` and `rsync` are on your machine.
+2. Install the packages: `uv sync`
+3. Copy `.env.example` to `.env`. Add the AWS keys (or `AWS_PROFILE`) and `GCP_PROJECT`.
+4. Log in to GCP: `gcloud auth application-default login`
+5. Copy `config.example.yaml` to `config.yaml`. Set `module` and `module_options`.
 
 Environment variables `FEDLAB_<KEY>` and `.env` override `config.yaml`.
 
 ## Run an experiment
 
 ```sh
-uv run fedlab check        # credentials, quotas, and the module's local data
+uv run fedlab check        # credentials, quotas, and the local data of the module
 uv run fedlab prepare      # module-specific local step (COMPASS: build the data caches)
 uv run fedlab experiment   # up -> deploy -> run -> collect -> destroy
 ```
@@ -45,13 +46,13 @@ Run each command with `uv run fedlab <command>`.
 
 | command | action |
 |---|---|
-| `check` | Test credentials, permissions, quotas, instance types, and the module's configuration. It creates nothing. |
+| `check` | Test credentials, permissions, quotas, instance types, and the configuration of the module. It creates nothing. |
 | `modules` | List the available modules. |
-| `prepare` | Run the module's local preparation step. It uses no cloud. |
+| `prepare` | Run the local preparation step of the module. It uses no cloud. |
 | `up` | Create all VMs, start stopped VMs, and wait for SSH. You can run it again safely. |
-| `deploy` | Wait for the VMs to finish first boot. Install the module's software and data. Start the federation. |
+| `deploy` | Wait for the VMs to finish first boot. Install the software and data of the module. Start the federation. |
 | `run` | Run the deployed experiment to completion. |
-| `collect` | Copy the results and service logs to `results/<run_name>/<timestamp>/`. Use `--out` to choose the directory. |
+| `collect` | Copy the results and service logs to `results/<run_name>/<timestamp>/`. Use `--out` to choose the directory, or set `results_dir` in the config. |
 | `logs <node>` | Show the Flower service log of a node. |
 | `experiment` | `up`, `deploy`, `run`, `collect`, `destroy`. |
 | `status`, `ping` | Show node states and IPs. Test SSH login on each node. |
@@ -59,7 +60,7 @@ Run each command with `uv run fedlab <command>`.
 | `ssh <node> [command]` | Open SSH to a node with the repo key. |
 | `destroy` | Delete all resources of this run. Add `--dry-run` to list them only. |
 
-`up`, `start`, `stop`, `ping`, and `check` accept `-n <node>` (repeat it for more nodes). `destroy` and `deploy` use the whole fleet. All commands accept `-c <file>` for a config file. Always run `destroy --dry-run` first and read the list.
+`up`, `start`, `stop`, `ping`, and `check` accept `-n <node>` (repeat it for more nodes). `destroy` and `deploy` use the whole fleet. Every command except `modules` accepts `-c <file>` for a config file. Always run `destroy --dry-run` first and read the list.
 
 ## The COMPASS module
 
@@ -78,14 +79,14 @@ Options (`module_options`):
 | `device` | `cuda` | Use `cpu` for tests. |
 | `backend` | `compass` | `stub` runs a numpy stand-in. It tests the cloud plumbing without data or GPU work. |
 
-**Data.** `prepare` runs two original scripts on your machine. The first converts each TSV to a memory-mapped float32 array, a sample list, a validation split, and per-gene min and max values. The second combines the min and max values into one shared scaler. During `deploy`, the TCGA cache goes only to the TCGA client and the GTEx cache only to the GTEx client. The server and both clients receive only the manifest, the scaler, and the gene list. Each node then checks that its data matches the manifest.
+**Data.** `prepare` runs two original scripts on your machine. The first converts each TSV to a memory-mapped float32 array, a sample list, a validation split, and per-gene min and max values. The second combines the min and max values into one shared scaler. During `deploy`, the TCGA cache goes only to the TCGA client and the GTEx cache only to the GTEx client. Every node receives the manifest, the scaler, and the gene list. Each node then checks that its data matches the manifest.
 
 **Results.** `collect` copies `run-<id>/` from the server. It holds `pretrainer_federated_tcga_gtex.pt` (the COMPASS pretrainer), `best_model.pth`, `history.tsv`, and `rounds.json` (per-round losses, times, and GPU memory). It also copies the SuperLink and SuperNode logs.
 
 **Differences from the original scripts.** The port uses Flower 1.33 (Message API) instead of 1.8.0, and it is only the default path (see below).
 
 - Flower 1.33 needs Python 3.11 or newer. `torch 1.13.1` and `torchvision 0.14.1` have no Python 3.11 builds together. The module uses `torch 2.0.1` and `torchvision 0.15.2`.
-- Each message runs in a new process. The Adam state is saved in a file on the node between rounds, because it is too large for Flower's 4 MiB `context.state` channel. The dropout RNG is seeded again each round.
+- Each message runs in a new process. The Adam state is saved in a file on the node between rounds. It is too large for the 4 MiB `context.state` channel of Flower. The dropout RNG is seeded again each round.
 - The per-message audit receipts of the original are dropped. Each node checks its prepared data once during `deploy`.
 - Only the default path is ported: historical protocol, scratch initialization, random negatives, and the full GTEx set. Other settings raise an error.
 
@@ -108,10 +109,10 @@ A module is a class that implements `FLModule` (`src/fedlab/modules/base.py`):
 ## Flower deployment
 
 - The server runs the SuperLink and submits runs. Each client runs a SuperNode.
-- `deploy` creates a new CA, a server certificate for the server's current IP, and one key per SuperNode. Only registered SuperNodes can join. Stop and start change the IPs, so run `deploy` again afterward.
-- Only the Fleet API (port 9092) is open to the network. The Control and ServerAppIo APIs listen on the server's loopback.
-- Python environments are in `~/fl` on each node. The server's results are in `~/results`.
-- `nodes.json` lists the server's `fleet_api` address. Clients have `flower: null`.
+- `deploy` creates a new CA, a server certificate for the current IP of the server, and one key per SuperNode. Only registered SuperNodes can join. Stop and start change the IPs, so run `deploy` again afterward.
+- Only the Fleet API (port 9092) is open to the network. The Control and ServerAppIo APIs listen only on the loopback address of the server.
+- Python environments are in `~/fl` on each node. The results are in `~/results` on the server.
+- `nodes.json` lists the `fleet_api` address of the server. Clients have `flower: null`.
 
 ## Local files
 
