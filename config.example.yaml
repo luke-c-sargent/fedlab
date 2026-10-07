@@ -6,7 +6,7 @@ name_prefix: fedlearn       # node names are <prefix>-<provider>-<location>
 aws_machine_type: m5.xlarge       # 4 vCPU / 16 GB
 gcp_machine_type: n2-standard-4   # 4 vCPU / 16 GB
 disk_gb: 200
-ports: [22, 9091, 9092, 9093]     # opened to 0.0.0.0/0 on the server only (clients open only 22)
+ports: [22, 9092]                 # opened to 0.0.0.0/0 on the server only (9092 = Flower Fleet API; clients open only 22)
 warn_after_days: 3                # `status` warns when a node has been running this long
 
 # Exactly one node must have role: server. Node names are <prefix>-<role>-<provider>-<location>.
@@ -14,6 +14,18 @@ warn_after_days: 3                # `status` warns when a node has been running 
 # accelerator:   GCP only, attaches a GPU to an N1 machine (omit for G2/A2, which include one).
 nodes:
   - {role: server, provider: aws, location: eu-west-1, machine_type: r6i.large}                  # 2 vCPU / 16 GB
-  - {role: client, provider: aws, location: us-east-1, machine_type: g6e.2xlarge, gpu: true}     # 8 vCPU / 64 GB, L40S
+  - {role: client, provider: aws, location: us-east-1, machine_type: g4dn.4xlarge, gpu: true}    # 16 vCPU / 64 GB, T4
   - {role: client, provider: gcp, location: us-central1-a, machine_type: n1-highmem-8, gpu: true, accelerator: nvidia-tesla-t4}  # 8 vCPU / 52 GB, T4
   # Per-node overrides: disk_gb: 500
+
+# Which federated-learning module to run (`fedlab modules` lists them) and its options.
+module: compass_tcga_gtex
+module_options:
+  compass_repo: ~/code/federated-learning-model    # checkout holding compass_hpc_foundation_model_train/
+  tcga_tsv: ~/data/TCGA_dataset/processed/tcga_compass_tpm.tsv    # used by `fedlab prepare` only
+  gtex_tsv: ~/data/GTEx_dataset/processed/gtex_compass_tpm.tsv
+  prepared_root: .fedlab/compass/prepared          # where `fedlab prepare` writes the per-site caches
+  # prep_python: /path/to/python                   # interpreter with numpy+pandas for prepare (default: this one)
+  # rounds: 100  patience: 10  local_epochs: 1  seed: 42  micro_batch_size: 64  device: cuda
+  # backend: stub                                  # numpy stand-in, to test the cloud plumbing without data
+# results_dir: results                             # `collect` writes here: results/<run_name>/<timestamp>/

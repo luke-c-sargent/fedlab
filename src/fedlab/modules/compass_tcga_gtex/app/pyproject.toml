@@ -1,0 +1,29 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "fedlab-compass"
+version = "0.1.0"
+dependencies = ["flwr==1.33.0", "numpy>=1.26,<2"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["fedlab_compass"]
+
+[tool.flwr.app]
+publisher = "fedlab"
+
+[tool.flwr.app.components]
+serverapp = "fedlab_compass.server_app:app"
+clientapp = "fedlab_compass.client_app:app"
+
+[tool.flwr.app.config]
+backend = "compass"          # "compass" = real training, "stub" = numpy stand-in for plumbing checks
+num-server-rounds = 100
+local-epochs = 1
+patience = 10
+seed = 42
+micro-batch-size = 64
+num-workers = 0
+cpu-threads = 8
+device = "cuda"

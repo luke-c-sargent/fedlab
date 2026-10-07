@@ -10,7 +10,7 @@ def test_defaults_give_one_server_and_two_gpu_clients(cfg):
         ("fedlearn-client-aws-us-east-1", "client"),
         ("fedlearn-client-gcp-us-central1-a", "client"),
     ]
-    assert [n.machine_type for n in nodes] == ["r6i.large", "g6e.2xlarge", "n1-highmem-8"]
+    assert [n.machine_type for n in nodes] == ["r6i.large", "g4dn.4xlarge", "n1-highmem-8"]
     assert [n.gpu for n in nodes] == [False, True, True]
     assert nodes[2].accelerator == "nvidia-tesla-t4"
     assert all(n.disk_gb == 200 for n in nodes)

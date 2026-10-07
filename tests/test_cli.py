@@ -6,7 +6,7 @@ from fedlab.cli import app
 def test_help():
     r = CliRunner().invoke(app, ["--help"])
     assert r.exit_code == 0
-    for cmd in ("check", "ping", "up", "start", "stop", "status", "ssh", "destroy"):
+    for cmd in ("check", "ping", "modules", "deploy", "run", "collect", "experiment", "up", "start", "stop", "status", "ssh", "destroy"):
         assert cmd in r.output
 
 
@@ -60,3 +60,68 @@ def test_ping_reports_per_node_and_exits_nonzero_on_failure(tmp_path, monkeypatc
     r = CliRunner().invoke(app, ["ping"])
     assert r.exit_code == 1
     assert "ok" in r.output and "1.2.3.4 12 ms" in r.output and "no public IP (state: stopped)" in r.output
+
+
+def test_modules_lists_the_registry():
+    r = CliRunner().invoke(app, ["modules"])
+    assert r.exit_code == 0 and "smoke" in r.output and "compass_tcga_gtex" in r.output
+
+
+def _experiment_env(monkeypatch, tmp_path, fail_at=None):
+    """Replace the cloud/module pieces of `experiment` with recorders."""
+    from fedlab import cli
+
+    calls = []
+
+    class FakeModule:
+        def validate(self, nodes):
+            return []
+
+        def stage(self, d):
+            calls.append("stage")
+
+        def start(self, d):
+            calls.append("start")
+
+        def run(self, d):
+            calls.append("run")
+            if fail_at == "run":
+                raise RuntimeError("training failed")
+            return "1"
+
+        def collect(self, d, dest):
+            calls.append("collect")
+            return []
+
+        def stop(self, d):
+            calls.append("stop")
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "config.yaml").write_text("module: smoke\n")
+    monkeypatch.setattr(cli, "get_module", lambda cfg: FakeModule())
+    monkeypatch.setattr(cli, "_up", lambda ctx: calls.append("up"))
+    monkeypatch.setattr(cli, "_deployment", lambda ctx: object())
+    monkeypatch.setattr(cli, "_wait_ready", lambda d: calls.append("ready"))
+    monkeypatch.setattr(cli, "_destroy", lambda ctx, yes=False, dry_run=False: calls.append("destroy"))
+    return calls
+
+
+def test_experiment_destroys_only_after_collecting(tmp_path, monkeypatch):
+    calls = _experiment_env(monkeypatch, tmp_path)
+    r = CliRunner().invoke(app, ["experiment", "--yes"])
+    assert r.exit_code == 0, r.output
+    assert calls == ["up", "ready", "stage", "start", "run", "collect", "stop", "destroy"]
+
+
+def test_experiment_keeps_the_fleet_when_the_run_fails(tmp_path, monkeypatch):
+    calls = _experiment_env(monkeypatch, tmp_path, fail_at="run")
+    r = CliRunner().invoke(app, ["experiment", "--yes"])
+    assert r.exit_code == 1
+    assert "destroy" not in calls and calls.count("collect") == 1  # still fetched the logs
+    assert "still running" in r.output
+
+
+def test_experiment_can_destroy_after_failure_when_asked(tmp_path, monkeypatch):
+    calls = _experiment_env(monkeypatch, tmp_path, fail_at="run")
+    r = CliRunner().invoke(app, ["experiment", "--yes", "--destroy-on-failure"])
+    assert r.exit_code == 1 and calls[-1] == "destroy"

@@ -76,4 +76,4 @@ def test_server_firewall_opens_flower_ports(cfg):
         fc.return_value.get.side_effect = NotFound("x")
         prov._ensure_firewall("server")
     fw = fc.return_value.insert.call_args.kwargs["firewall_resource"]
-    assert fw.name == "fedlearn-server" and list(fw.allowed[0].ports) == ["22", "9091", "9092", "9093"]
+    assert fw.name == "fedlearn-server" and list(fw.allowed[0].ports) == ["22", "9092"]

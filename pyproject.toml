@@ -13,7 +13,11 @@ dependencies = [
 ]
 
 [dependency-groups]
-dev = ["pytest>=8", "moto[ec2]>=5"]
+dev = [
+    "pytest>=8",
+    "moto[ec2]>=5",
+    "flwr==1.33.0",
+]
 
 [project.scripts]
 fedlab = "fedlab.cli:app"
@@ -27,3 +31,4 @@ packages = ["src/fedlab"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["src/fedlab/modules/compass_tcga_gtex/app"]  # the Flower app, imported directly by its tests

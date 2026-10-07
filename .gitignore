@@ -6,3 +6,4 @@ config.yaml
 .fedlab/
 .pytest_cache/
 dist/
+results/

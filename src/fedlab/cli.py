@@ -1,4 +1,4 @@
-"""fedlab CLI: check / ping / up / status / start / stop / ssh / destroy."""
+"""fedlab CLI: check / ping / up / deploy / run / collect / experiment / status / start / stop / ssh / destroy."""
 
 from __future__ import annotations
 
@@ -16,7 +16,10 @@ from rich.table import Table
 
 from . import ssh as sshmod
 from .config import Node, Settings, load_settings
+from .modules import REGISTRY, Deployment, FLModule, Site, get_module, module_class
 from .providers import NodeInfo, Provider, get_provider
+from .readiness import wait_ready
+from .remote import SshHost
 
 app = typer.Typer(no_args_is_help=True, help="Launch and tear down multi-cloud VMs for Flower tests.")
 console = Console()
@@ -137,6 +140,17 @@ def check(config: Optional[Path] = ConfigOpt, node: Optional[list[str]] = NodeOp
                 failed += not r.ok
                 mark = "[green]ok  [/]" if r.ok else "[red]FAIL[/]"
                 console.print(f"{mark} {r.name}" + (f" [dim]{r.detail}[/]" if r.detail else ""), highlight=False)
+    if cfg.module:
+        try:
+            problems = get_module(cfg).validate(cfg.resolved_nodes())
+        except ValueError as e:
+            problems = [str(e)]
+        if problems:
+            for p in problems:
+                console.print(f"[red]FAIL[/] module {cfg.module}: {p}", highlight=False)
+            failed += len(problems)
+        else:
+            console.print(f"[green]ok  [/] module {cfg.module}: configuration and local data", highlight=False)
     if not shutil.which("ssh"):
         console.print("[red]FAIL[/] local: `ssh` not found on PATH")
         failed += 1
@@ -168,12 +182,15 @@ def ping(config: Optional[Path] = ConfigOpt, node: Optional[list[str]] = NodeOpt
         raise typer.Exit(1)
 
 
+def _up(ctx: Ctx) -> None:
+    errors = _run_parallel(ctx, "up", lambda n: ctx.for_node(n).up(n))
+    _finish(ctx, errors, wait_ssh=True)
+
+
 @app.command()
 def up(config: Optional[Path] = ConfigOpt, node: Optional[list[str]] = NodeOpt):
     """Create the VMs (idempotent; starts any that are stopped) and wait for SSH."""
-    ctx = Ctx(config, node)
-    errors = _run_parallel(ctx, "up", lambda n: ctx.for_node(n).up(n))
-    _finish(ctx, errors, wait_ssh=True)
+    _up(Ctx(config, node))
 
 
 @app.command()
@@ -218,14 +235,7 @@ def ssh_cmd(
     os.execvp("ssh", cmd)
 
 
-@app.command()
-def destroy(
-    config: Optional[Path] = ConfigOpt,
-    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),
-    dry_run: bool = typer.Option(False, "--dry-run", help="List what would be deleted"),
-):
-    """Delete ALL resources tagged for this run (instances, disks, firewalls, keys)."""
-    ctx = Ctx(config)  # always the whole fleet
+def _destroy(ctx: Ctx, yes: bool = False, dry_run: bool = False) -> None:
     by_provider: dict[str, list[Node]] = {}
     for n in ctx.nodes:
         by_provider.setdefault(n.provider, []).append(n)
@@ -249,6 +259,180 @@ def destroy(
     sshmod.write_nodes_json(ctx.cfg, infos, ctx.key)
     sshmod.write_ssh_config(ctx.cfg, infos, ctx.key)
     console.print("[green]Destroyed.[/] (Local keypair in .fedlab/ was kept; delete it manually if desired.)")
+
+
+
+
+@app.command()
+def destroy(
+    config: Optional[Path] = ConfigOpt,
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="List what would be deleted"),
+):
+    """Delete ALL resources tagged for this run (instances, disks, firewalls, keys)."""
+    _destroy(Ctx(config), yes, dry_run)  # always the whole fleet
+
+
+# ---- federated-learning modules ---------------------------------------------------
+
+
+def _log(message: str) -> None:
+    console.print(message, markup=False, highlight=False)
+
+
+def _module(ctx: Ctx) -> FLModule:
+    try:
+        module = get_module(ctx.cfg)
+    except ValueError as e:
+        raise typer.BadParameter(str(e))
+    problems = module.validate(ctx.all_nodes)
+    for p in problems:
+        console.print(f"[red]FAIL[/] {p}", highlight=False)
+    if problems:
+        raise typer.Exit(1)
+    return module
+
+
+def _deployment(ctx: Ctx) -> Deployment:
+    infos = {i.name: i for i in ctx.describe_all()}
+    sites = []
+    for n in ctx.all_nodes:
+        info = infos[n.name]
+        if info.state != "running" or not info.public_ip:
+            raise typer.BadParameter(f"{n.name} is not running (state: {info.state}); run `fedlab up`")
+        sites.append(Site(n, SshHost(n.name, info.public_ip, ctx.cfg.ssh_user, ctx.key)))
+    server = next(s for s in sites if s.node.role == "server")
+    clients = [s for s in sites if s.node.role == "client"]
+    return Deployment(ctx.cfg, server, clients, ctx.cfg.state_dir / "deploy", log=_log)
+
+
+def _wait_ready(d: Deployment) -> None:
+    with ThreadPoolExecutor() as ex:
+        list(ex.map(lambda s: wait_ready(s.host, s.node.gpu, log=d.log), d.sites))
+
+
+def _collect(ctx: Ctx, module: FLModule, d: Deployment, out: Optional[Path] = None) -> Path:
+    dest = out or ctx.cfg.results_dir / ctx.cfg.run_name / datetime.now().strftime("%Y%m%d-%H%M%S")
+    files = module.collect(d, dest)
+    console.print(f"[green]Collected {len(files)} file(s)[/] into {dest}")
+    return dest
+
+
+@app.command()
+def modules():
+    """List the available federated-learning modules."""
+    table = Table()
+    for col in ("module", "description"):
+        table.add_column(col)
+    for name in sorted(REGISTRY):
+        table.add_row(name, module_class(name).description)
+    console.print(table)
+
+
+@app.command()
+def prepare(config: Optional[Path] = ConfigOpt):
+    """Run the module's local preparation step (for example, build data caches). Uses no cloud."""
+    cfg = load_settings(config)
+    try:
+        module = get_module(cfg)
+    except ValueError as e:
+        raise typer.BadParameter(str(e))
+    module.prepare(_log)
+
+
+@app.command()
+def deploy(config: Optional[Path] = ConfigOpt):
+    """Install the module's software and data on the running nodes, then start the federation."""
+    ctx = Ctx(config)
+    module = _module(ctx)
+    d = _deployment(ctx)
+    _wait_ready(d)
+    module.stage(d)
+    module.start(d)
+    console.print("[green]Deployed.[/] Next: `fedlab run`")
+
+
+@app.command()
+def run(config: Optional[Path] = ConfigOpt):
+    """Run the deployed experiment to completion."""
+    ctx = Ctx(config)
+    module = _module(ctx)
+    run_id = module.run(_deployment(ctx))
+    console.print(f"[green]Run {run_id} completed.[/] Next: `fedlab collect`")
+
+
+@app.command()
+def collect(config: Optional[Path] = ConfigOpt, out: Optional[Path] = typer.Option(None, "--out", "-o", help="Local directory for results")):
+    """Copy results (and service logs) from the nodes to this machine."""
+    ctx = Ctx(config)
+    module = _module(ctx)
+    _collect(ctx, module, _deployment(ctx), out)
+
+
+@app.command()
+def logs(
+    node: str = typer.Argument(..., help="Node name"),
+    service: str = typer.Argument("auto", help="superlink, supernode, or auto"),
+    lines: int = typer.Option(80, "--lines", "-n"),
+    config: Optional[Path] = ConfigOpt,
+):
+    """Show the Flower service log on a node."""
+    ctx = Ctx(config, [node])
+    n = ctx.nodes[0]
+    site = next(s for s in _deployment(ctx).sites if s.node.name == n.name)
+    name = ("superlink" if n.role == "server" else "supernode") if service == "auto" else service
+    console.print(site.host.service_log(name, lines), markup=False, highlight=False)
+
+
+@app.command()
+def experiment(
+    config: Optional[Path] = ConfigOpt,
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmations"),
+    keep: bool = typer.Option(False, "--keep", help="Do not destroy the fleet afterwards"),
+    destroy_on_failure: bool = typer.Option(False, "--destroy-on-failure", help="Also destroy the fleet if the experiment fails"),
+):
+    """up -> deploy -> run -> collect -> destroy. The fleet is destroyed only after results are collected."""
+    ctx = Ctx(config)
+    module = _module(ctx)
+    if not yes and not typer.confirm(
+        f"Create {len(ctx.all_nodes)} VM(s), run module '{ctx.cfg.module}', collect results"
+        f"{'' if keep else ', and destroy everything'}?"
+    ):
+        raise typer.Abort()
+    d: Deployment | None = None
+    collected = False
+    try:
+        _up(ctx)
+        d = _deployment(ctx)
+        _wait_ready(d)
+        module.stage(d)
+        module.start(d)
+        module.run(d)
+        _collect(ctx, module, d)
+        collected = True
+    except (Exception, KeyboardInterrupt, typer.Exit) as e:
+        console.print(f"[red]Experiment failed:[/] {type(e).__name__}: {e}", markup=False)
+        if d is not None and not collected:
+            try:
+                _collect(ctx, module, d)  # logs are worth having
+            except Exception as ce:
+                console.print(f"[yellow]could not collect after failure:[/] {ce}", markup=False)
+    finally:
+        if d is not None:
+            try:
+                module.stop(d)
+            except Exception:
+                pass
+    if not collected:
+        if destroy_on_failure:
+            _destroy(ctx, yes=True)
+        else:
+            console.print("[yellow]The fleet is still running (billing). Debug with `fedlab logs`, then `fedlab destroy`.[/]")
+        raise typer.Exit(1)
+    if keep:
+        console.print("[yellow]--keep: fleet left running. `fedlab destroy` when done.[/]")
+    else:
+        _destroy(ctx, yes=True)
 
 
 if __name__ == "__main__":

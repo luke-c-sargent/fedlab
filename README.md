@@ -1,25 +1,43 @@
 # fedlab
 
-fedlab starts and removes VMs on AWS and GCP for federated-learning tests with [Flower](https://flower.ai).
+fedlab runs federated-learning experiments on AWS and GCP. It starts the VMs, installs an experiment, runs it, copies the results to your machine, and removes the VMs.
 
-The default fleet has one server and two GPU clients. Each VM has a 200 GB disk and runs Ubuntu 22.04 on-demand.
+An experiment is a **module**. The module `compass_tcga_gtex` trains the COMPASS foundation model on TCGA and GTEx with [Flower](https://flower.ai). Other modules can use the same lifecycle (see "Add a module").
 
-| node | role | where | type | spec |
-|---|---|---|---|---|
-| `fedlearn-server-aws-eu-west-1` | server | AWS eu-west-1 | r6i.large | 2 vCPU / 16 GB |
-| `fedlearn-client-aws-us-east-1` | client | AWS us-east-1 | g6e.2xlarge | 8 vCPU / 64 GB, 1x L40S |
-| `fedlearn-client-gcp-us-central1-a` | client | GCP us-central1-a | n1-highmem-8 + T4 | 8 vCPU / 52 GB, 1x T4 |
+## Default fleet
 
-Exactly one node must have `role: server`. A g6e.2xlarge costs about $2.2 per hour. Stop or destroy GPU nodes when they are idle.
+One server and two GPU clients. Each VM has a 200 GB disk and runs Ubuntu 22.04 on-demand.
+
+| node | role | site | where | type | spec |
+|---|---|---|---|---|---|
+| `fedlearn-server-aws-eu-west-1` | server | - | AWS eu-west-1 | r6i.large | 2 vCPU / 16 GB |
+| `fedlearn-client-aws-us-east-1` | client | tcga | AWS us-east-1 | g4dn.4xlarge | 16 vCPU / 64 GB, 1x T4 |
+| `fedlearn-client-gcp-us-central1-a` | client | gtex | GCP us-central1-a | n1-highmem-8 + T4 | 8 vCPU / 52 GB, 1x T4 |
+
+Exactly one node must have `role: server`. A client with a `site` holds that site's data. The GPU clients cost about $1.20 per hour each. `destroy` the fleet when it is idle.
 
 ## Setup
 
 1. Install the packages: `uv sync`
 2. Copy `.env.example` to `.env`. Add the AWS keys (or `AWS_PROFILE`) and `GCP_PROJECT`.
 3. Log in to GCP: `gcloud auth application-default login`
-4. Optional: copy `config.example.yaml` to `config.yaml` to change the nodes. The defaults match the table.
+4. Copy `config.example.yaml` to `config.yaml`. Set `module` and `module_options`.
 
 Environment variables `FEDLAB_<KEY>` and `.env` override `config.yaml`.
+
+## Run an experiment
+
+```sh
+uv run fedlab check        # credentials, quotas, and the module's local data
+uv run fedlab prepare      # module-specific local step (COMPASS: build the data caches)
+uv run fedlab experiment   # up -> deploy -> run -> collect -> destroy
+```
+
+`experiment` destroys the fleet only after `collect` succeeds. If a step fails, it keeps the fleet, so you can read the logs. Then run `fedlab destroy`. Options:
+
+- `--keep` leaves the fleet running after success.
+- `--destroy-on-failure` also destroys the fleet after a failure.
+- `--yes` skips the confirmation.
 
 ## Commands
 
@@ -27,51 +45,87 @@ Run each command with `uv run fedlab <command>`.
 
 | command | action |
 |---|---|
-| `check` | Test credentials, permissions, quotas, and instance types. It creates nothing. |
+| `check` | Test credentials, permissions, quotas, instance types, and the module's configuration. It creates nothing. |
+| `modules` | List the available modules. |
+| `prepare` | Run the module's local preparation step. It uses no cloud. |
 | `up` | Create all VMs, start stopped VMs, and wait for SSH. You can run it again safely. |
-| `status` | Show state, IP, and uptime. It also refreshes the local files. |
-| `ping` | Test SSH login on each node. |
+| `deploy` | Wait for the VMs to finish first boot. Install the module's software and data. Start the federation. |
+| `run` | Run the deployed experiment to completion. |
+| `collect` | Copy the results and service logs to `results/<run_name>/<timestamp>/`. Use `--out` to choose the directory. |
+| `logs <node>` | Show the Flower service log of a node. |
+| `experiment` | `up`, `deploy`, `run`, `collect`, `destroy`. |
+| `status`, `ping` | Show node states and IPs. Test SSH login on each node. |
 | `start`, `stop` | Start or stop VMs. Stopped VMs still pay for their disks. |
 | `ssh <node> [command]` | Open SSH to a node with the repo key. |
 | `destroy` | Delete all resources of this run. Add `--dry-run` to list them only. |
 
-`up`, `start`, `stop`, `ping`, and `check` accept `-n <node>` (repeat it for more nodes). `destroy` ignores `-n`. All commands accept `-c <file>` for a config file.
+`up`, `start`, `stop`, `ping`, and `check` accept `-n <node>` (repeat it for more nodes). `destroy` and `deploy` use the whole fleet. All commands accept `-c <file>` for a config file. Always run `destroy --dry-run` first and read the list.
 
-Always run `destroy --dry-run` first and read the list.
+## The COMPASS module
+
+The module runs the federated COMPASS pretraining from the `federated-learning-model` repo. The TCGA client holds 33 cancer contexts. The GTEx client holds the normal-tissue context. FedAvg weights them 33 to 1. Training stops early when the validation loss does not improve for `patience` rounds.
+
+Options (`module_options`):
+
+| option | default | meaning |
+|---|---|---|
+| `compass_repo` | required | Your checkout of `federated-learning-model`. fedlab uploads `compass_hpc_foundation_model_train/{centralized_test,federated_test}` from it. |
+| `tcga_tsv`, `gtex_tsv` | required for `prepare` | The processed expression files. They never leave your machine. |
+| `prepared_root` | `.fedlab/compass/prepared` | Output of `prepare`. |
+| `prep_python` | this Python | Interpreter with numpy and pandas for `prepare`. |
+| `rounds`, `patience`, `local_epochs`, `seed` | 100, 10, 1, 42 | Training schedule. |
+| `micro_batch_size`, `num_workers`, `cpu_threads` | 64, 0, 8 | Client runtime. |
+| `device` | `cuda` | Use `cpu` for tests. |
+| `backend` | `compass` | `stub` runs a numpy stand-in. It tests the cloud plumbing without data or GPU work. |
+
+**Data.** `prepare` runs two original scripts on your machine. The first converts each TSV to a memory-mapped float32 array, a sample list, a validation split, and per-gene min and max values. The second combines the min and max values into one shared scaler. During `deploy`, the TCGA cache goes only to the TCGA client and the GTEx cache only to the GTEx client. The server and both clients receive only the manifest, the scaler, and the gene list. Each node then checks that its data matches the manifest.
+
+**Results.** `collect` copies `run-<id>/` from the server. It holds `pretrainer_federated_tcga_gtex.pt` (the COMPASS pretrainer), `best_model.pth`, `history.tsv`, and `rounds.json` (per-round losses, times, and GPU memory). It also copies the SuperLink and SuperNode logs.
+
+**Differences from the original scripts.** The port uses Flower 1.33 (Message API) instead of 1.8.0, and it is only the default path (see below).
+
+- Flower 1.33 needs Python 3.11 or newer. `torch 1.13.1` and `torchvision 0.14.1` have no Python 3.11 builds together. The module uses `torch 2.0.1` and `torchvision 0.15.2`.
+- Each message runs in a new process. The Adam state is saved in a file on the node between rounds, because it is too large for Flower's 4 MiB `context.state` channel. The dropout RNG is seeded again each round.
+- The per-message audit receipts of the original are dropped. Each node checks its prepared data once during `deploy`.
+- Only the default path is ported: historical protocol, scratch initialization, random negatives, and the full GTEx set. Other settings raise an error.
+
+## Add a module
+
+A module is a class that implements `FLModule` (`src/fedlab/modules/base.py`):
+
+| method | job |
+|---|---|
+| `validate(nodes)` | Local checks. Return a list of problems. |
+| `prepare(log)` | Optional local step that builds inputs. |
+| `stage(d)` | Install software and upload code and data. |
+| `start(d)` | Start the long-running services. |
+| `run(d)` | Run to completion. Return a run id. Raise on failure. |
+| `collect(d, dest)` | Copy results to the local directory `dest`. |
+| `stop(d)` | Stop the services. |
+
+`d` is a `Deployment`: the server and clients, each with a `Host` for commands, file copies, and services. For a Flower app, subclass `FlowerModule` (`src/fedlab/modules/flower_module.py`). It handles the Python 3.11 environment, TLS, node authentication, `flwr run`, and result collection. You supply the app directory, a requirements file, and the run config. `src/fedlab/modules/smoke/` is a small example. Register the class in `src/fedlab/modules/__init__.py`.
+
+## Flower deployment
+
+- The server runs the SuperLink and submits runs. Each client runs a SuperNode.
+- `deploy` creates a new CA, a server certificate for the server's current IP, and one key per SuperNode. Only registered SuperNodes can join. Stop and start change the IPs, so run `deploy` again afterward.
+- Only the Fleet API (port 9092) is open to the network. The Control and ServerAppIo APIs listen on the server's loopback.
+- Python environments are in `~/fl` on each node. The server's results are in `~/results`.
+- `nodes.json` lists the server's `fleet_api` address. Clients have `flower: null`.
 
 ## Local files
 
 Public IPs change after each stop and start. After `up`, `start`, `stop`, and `status`, fedlab rewrites these files:
 
-- `.fedlab/nodes.json` contains the role, IP, SSH user, SSH key, and open ports of each node.
+- `.fedlab/nodes.json` contains the role, site, IP, SSH user, SSH key, and open ports of each node.
 - `~/.ssh/config.d/fedlab` lets you use `ssh <node>`. On first run, fedlab asks before it adds an `Include` line to `~/.ssh/config`.
 
 The same directory holds the SSH keypair `id_ed25519`. `destroy` keeps it.
 
-## Flower endpoints
-
-Only the server entry in `nodes.json` has a `flower` block. The block holds the addresses of the three Flower APIs of the SuperLink:
-
-| key | port | used by |
-|---|---|---|
-| `fleet_api` | 9092 | SuperNodes on the clients |
-| `serverappio_api` | 9091 | ServerApp processes |
-| `exec_api` | 9093 | `flwr run` |
-
-For clients, `flower` is `null`. Clients connect out to `fleet_api` and accept no Flower connections.
-
-fedlab does not start Flower. The server IP changes after each stop and start, so read `nodes.json` again.
-
-## Provisioning
-
-cloud-init installs Python 3, `uv`, `git`, and a venv with the latest `flwr` at `~/fl`. It runs after SSH starts.
-
-To wait for it, run `ssh <node> 'cloud-init status --wait'`. The file `/var/lib/fedlab-ready` shows that it is done.
-
 ## GPUs
 
 - **AWS:** `gpu: true` selects the "Deep Learning Base OSS Nvidia Driver GPU AMI (Ubuntu 22.04)". It includes the driver and CUDA.
-- **GCP:** The image is stock Ubuntu. cloud-init runs `ubuntu-drivers install --gpgpu`, then reboots the node once. This starts about one minute after first boot. After the reboot, run `nvidia-smi`.
+- **GCP:** The image is stock Ubuntu. cloud-init runs `ubuntu-drivers install --gpgpu`, then reboots the node once. `deploy` waits for the driver.
 - **GCP:** `accelerator:` attaches a GPU to an N1 machine. fedlab sets the maintenance policy to terminate, because GPU VMs cannot live-migrate.
 
 New accounts often have no GPU quota. `check` tests the AWS vCPU quota with a launch dry run. It also tests the GCP GPU quota.
@@ -80,10 +134,10 @@ New accounts often have no GPU quota. `check` tests the AWS vCPU quota with a la
 
 | role | open ports (from 0.0.0.0/0) |
 |---|---|
-| server | 22, 9091, 9092, 9093 (set with `ports`) |
+| server | 22, 9092 (set with `ports`) |
 | client | 22 |
 
-SSH accepts the repo key only. Flower gRPC is not encrypted and has no login, unless you enable TLS in Flower. The generated SSH config does not check host keys, because IPs are reused.
+SSH accepts the repo key only. Flower traffic uses TLS, and SuperNodes must be registered. The generated SSH config does not check host keys, because IPs are reused.
 
 ## Teardown
 
@@ -99,4 +153,9 @@ GCP firewall rules cannot carry labels. `destroy` removes them by name: `<run_na
 
 ## Tests
 
-Run `uv run pytest`. The tests use mocks (moto for AWS) and make no cloud calls.
+Run `uv run pytest`. The tests use mocks (moto for AWS) and a fake Flower grid. They make no cloud calls.
+
+Two slow tests are opt-in:
+
+- `FEDLAB_E2E=1` runs the full lifecycle on local fake nodes with real Flower (TLS, node auth). It needs network access.
+- `FEDLAB_E2E_REAL=1` runs the real COMPASS training on synthetic data on CPU. The docstring of `tests/test_e2e_compass_real.py` lists the setup.

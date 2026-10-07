@@ -1,0 +1,21 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "fedlab-smoke"
+version = "0.1.0"
+dependencies = ["flwr==1.33.0", "numpy>=1.26"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["fedlab_smoke"]
+
+[tool.flwr.app]
+publisher = "fedlab"
+
+[tool.flwr.app.components]
+serverapp = "fedlab_smoke.server_app:app"
+clientapp = "fedlab_smoke.client_app:app"
+
+[tool.flwr.app.config]
+num-server-rounds = 3

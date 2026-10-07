@@ -34,7 +34,7 @@ def test_lifecycle_and_destroy(aws, cfg):
     assert vol["Size"] == 200 and vol["VolumeType"] == "gp3"
     sg = aws._find_sg(ec2, "server")
     ports = sorted(p["FromPort"] for p in sg["IpPermissions"])
-    assert ports == [22, 9091, 9092, 9093]
+    assert ports == [22, 9092]
 
     aws.stop(node)
     assert aws.describe(node).state == "stopped"
