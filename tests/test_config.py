@@ -55,8 +55,9 @@ def test_cloud_init_installs_nvidia_driver_only_when_asked(tmp_path):
     text = cloud_init.render("ubuntu", install_nvidia_driver=True)
     doc = yaml.safe_load(text)  # must stay valid cloud-config
     assert "ubuntu-drivers-common" in doc["packages"]  # the GCP image does not ship the tool
-    script = doc["write_files"][0]["content"]
-    assert doc["write_files"][0]["path"] == "/usr/local/sbin/fedlab-gpu-driver.sh"
+    files = {f["path"]: f["content"] for f in doc["write_files"]}
+    script = files["/usr/local/sbin/fedlab-gpu-driver.sh"]
+    assert "Acquire::Retries" in files["/etc/apt/apt.conf.d/99fedlab"]
     assert script.index("ubuntu-drivers install --gpgpu") < script.index("nvidia-utils-") < script.index("shutdown -r")
     assert "fedlab-driver-failed" in script
     commands = [c[2] for c in doc["runcmd"]]
@@ -65,4 +66,5 @@ def test_cloud_init_installs_nvidia_driver_only_when_asked(tmp_path):
     path.write_text(script)
     assert subprocess.run(["bash", "-n", str(path)]).returncode == 0  # valid shell
     plain = yaml.safe_load(cloud_init.render("ubuntu"))
-    assert "write_files" not in plain and "ubuntu-drivers-common" not in plain["packages"]
+    assert [f["path"] for f in plain["write_files"]] == ["/etc/apt/apt.conf.d/99fedlab"]  # apt settings on every node
+    assert "ubuntu-drivers-common" not in plain["packages"]

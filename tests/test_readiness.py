@@ -26,13 +26,27 @@ def no_sleep(monkeypatch):
     monkeypatch.setattr(readiness.time, "monotonic", lambda: clock["t"])
 
 
-DONE = (0, "cloud-init=0\n")
+DONE = (0, "status: done\nlast: finished\n")
+RUNNING = (0, "status: running\nlast: Get:7 linux-image-6.8.0\n")
 
 
 def test_cpu_node_is_ready_once_cloud_init_is_done():
-    host = ScriptedHost([(255, ""), DONE])  # first call: SSH not up yet
+    host = ScriptedHost([(255, ""), RUNNING, DONE])  # SSH not up yet, then still installing, then done
     readiness.wait_ready(host, gpu=False, log=lambda m: None)
-    assert host.calls == 2
+    assert host.calls == 3
+
+
+def test_progress_lines_show_what_the_node_is_doing():
+    messages = []
+    host = ScriptedHost([RUNNING, RUNNING, RUNNING, DONE])
+    readiness.wait_ready(host, gpu=False, log=messages.append)
+    assert len(messages) == 1  # repeated identical progress is not repeated
+    assert "cloud-init running: Get:7 linux-image-6.8.0" in messages[0]
+
+
+def test_a_failed_cloud_init_stops_the_wait():
+    with pytest.raises(RuntimeError, match="cloud-init failed"):
+        readiness.wait_ready(ScriptedHost([(1, "status: error\nlast: boom\n")]), gpu=False, log=lambda m: None)
 
 
 def test_gpu_node_waits_for_the_driver_and_logs_sparingly():

@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
@@ -278,8 +279,17 @@ def destroy(
 # ---- federated-learning modules ---------------------------------------------------
 
 
+_START = time.monotonic()
+
+
 def _log(message: str) -> None:
-    console.print(message, markup=False, highlight=False)
+    """Print a progress line prefixed with the time since fedlab started (so a quiet step is visibly alive)."""
+    elapsed = int(time.monotonic() - _START)
+    console.print(f"[+{elapsed // 60:02d}:{elapsed % 60:02d}] {message}", markup=False, highlight=False)
+
+
+def _phase(number: int, total: int, title: str) -> None:
+    console.rule(f"[bold]{number}/{total} {title}", style="cyan")
 
 
 def _module(ctx: Ctx) -> FLModule:
@@ -352,8 +362,11 @@ def deploy(config: Optional[Path] = ConfigOpt):
     ctx = Ctx(config)
     module = _module(ctx)
     d = _deployment(ctx)
+    _phase(1, 3, "wait for first boot (cloud-init, GPU driver)")
     _wait_ready(d)
+    _phase(2, 3, "install software and data")
     module.stage(d)
+    _phase(3, 3, "start the federation")
     module.start(d)
     console.print("[green]Deployed.[/] Next: `fedlab run`")
 
@@ -408,12 +421,18 @@ def experiment(
     d: Deployment | None = None
     collected = False
     try:
+        _phase(1, 6, "create the VMs and wait for SSH")
         _up(ctx)
         d = _deployment(ctx)
+        _phase(2, 6, "wait for first boot (cloud-init, GPU driver)")
         _wait_ready(d)
+        _phase(3, 6, "install software and data")
         module.stage(d)
+        _phase(4, 6, "start the federation")
         module.start(d)
+        _phase(5, 6, "run the experiment")
         module.run(d)
+        _phase(6, 6, "collect results")
         _collect(ctx, module, d)
         collected = True
     except (Exception, KeyboardInterrupt, typer.Exit) as e:

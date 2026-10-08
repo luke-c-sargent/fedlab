@@ -11,6 +11,13 @@ packages:
   - curl
   - build-essential
   - rsync
+write_files:
+  # A stalled mirror connection once left `apt-get` hanging for 25 minutes: give up on it and retry.
+  - path: /etc/apt/apt.conf.d/99fedlab
+    content: |
+      Acquire::http::Timeout "30";
+      Acquire::https::Timeout "30";
+      Acquire::Retries "5";
 runcmd:
   - [bash, -c, "id {user} >/dev/null 2>&1 || useradd -m -s /bin/bash {user}"]
   - [bash, -c, "curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 sh"]
@@ -23,8 +30,7 @@ runcmd:
 # leaves `fedlab-driver-failed` and skips the reboot, so `wait_ready` can stop at once instead of timing out.
 # This text is not passed through str.format, so shell braces are safe.
 NVIDIA_PACKAGE = "  - ubuntu-drivers-common\n"
-NVIDIA_SCRIPT_FILE = """write_files:
-  - path: /usr/local/sbin/fedlab-gpu-driver.sh
+NVIDIA_SCRIPT_FILE = """  - path: /usr/local/sbin/fedlab-gpu-driver.sh
     permissions: '0755'
     content: |
       #!/bin/bash
@@ -42,6 +48,6 @@ def render(ssh_user: str, install_nvidia_driver: bool = False) -> str:
     if install_nvidia_driver:
         marker = '  - [bash, -c, "touch /var/lib/fedlab-ready"]\n'
         text = text.replace("  - rsync\n", "  - rsync\n" + NVIDIA_PACKAGE)
-        text = text.replace("runcmd:\n", NVIDIA_SCRIPT_FILE + "runcmd:\n")
+        text = text.replace("runcmd:\n", NVIDIA_SCRIPT_FILE + "runcmd:\n")  # one more item of write_files
         text = text.replace(marker, NVIDIA_DRIVER_STEP + marker)
     return text
