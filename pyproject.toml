@@ -10,6 +10,8 @@ dependencies = [
     "pydantic-settings[yaml]>=2.2",
     "typer>=0.12",
     "cryptography>=42",
+    "numpy>=1.26",   # numpy and pandas run `fedlab prepare` (the COMPASS data preparation scripts)
+    "pandas>=2.0",
 ]
 
 [dependency-groups]

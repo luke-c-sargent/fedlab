@@ -9,20 +9,20 @@ disk_gb: 200
 ports: [22, 9092]                 # opened to 0.0.0.0/0 on the server only (9092 = Flower Fleet API; clients open only 22)
 warn_after_days: 3                # `status` warns when a node has been running this long
 
-# Exactly one node must have role: server. Node names are <prefix>-<role>-<provider>-<location>.
+# Exactly one node must have role: server. Each client needs a `site` (the data it holds; the COMPASS module wants tcga and gtex). Node names are <prefix>-<role>-<provider>-<location>.
 # gpu: true      AWS: NVIDIA-driver AMI. GCP: driver installed on first boot (node reboots once).
 # accelerator:   GCP only, attaches a GPU to an N1 machine (omit for G2/A2, which include one).
 nodes:
   - {role: server, provider: aws, location: eu-west-1, machine_type: r6i.large}                  # 2 vCPU / 16 GB
-  - {role: client, provider: aws, location: us-east-1, machine_type: g4dn.4xlarge, gpu: true}    # 16 vCPU / 64 GB, T4
-  - {role: client, provider: gcp, location: us-central1-a, machine_type: n1-highmem-8, gpu: true, accelerator: nvidia-tesla-t4}  # 8 vCPU / 52 GB, T4
+  - {role: client, site: tcga, provider: aws, location: us-east-1, machine_type: g4dn.4xlarge, gpu: true} # 16 vCPU / 64 GB, T4
+  - {role: client, site: gtex, provider: gcp, location: us-central1-a, machine_type: n1-highmem-8, gpu: true, accelerator: nvidia-tesla-t4}  # 8 vCPU / 52 GB, T4
   # Per-node overrides: disk_gb: 500
 
 # Which federated-learning module to run (`fedlab modules` lists them) and its options.
 module: compass_tcga_gtex
 module_options:
   compass_repo: ~/code/federated-learning-model    # checkout holding compass_hpc_foundation_model_train/
-  tcga_tsv: ~/data/TCGA_dataset/processed/tcga_compass_tpm.tsv    # used by `fedlab prepare` only
+  tcga_tsv: ~/data/TCGA_dataset/processed/tcga_compass_tpm.tsv    # SOURCE tsv, input to `fedlab prepare` only
   gtex_tsv: ~/data/GTEx_dataset/processed/gtex_compass_tpm.tsv
   prepared_root: .fedlab/compass/prepared          # where `fedlab prepare` writes the per-site caches
   # prep_python: /path/to/python                   # interpreter with numpy+pandas for prepare (default: this one)

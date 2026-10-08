@@ -29,3 +29,24 @@ def test_ssh_config_and_nodes_json(cfg):
     assert data["fedlearn-client-aws-us-east-1"]["role"] == "client"
     assert data["fedlearn-client-aws-us-east-1"]["ports"] == [22]
     assert data["fedlearn-client-aws-us-east-1"]["flower"] is None  # clients don't serve Flower APIs
+
+
+def test_wait_for_login_retries_until_ssh_works(monkeypatch):
+    attempts = []
+
+    def fake_probe(host, user, key, timeout=10):
+        attempts.append(host)
+        return (len(attempts) >= 3, "")
+
+    monkeypatch.setattr(ssh, "probe_ssh", fake_probe)
+    monkeypatch.setattr(ssh.time, "sleep", lambda s: None)
+    assert ssh.wait_for_login("1.2.3.4", "ubuntu", None, timeout=300, interval=5) is True
+    assert attempts == ["1.2.3.4"] * 3
+
+
+def test_wait_for_login_gives_up_at_the_deadline(monkeypatch):
+    clock = iter(range(0, 1000, 100))  # each probe "takes" 100 s
+    monkeypatch.setattr(ssh, "probe_ssh", lambda *a, **k: (False, "refused"))
+    monkeypatch.setattr(ssh.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(ssh.time, "sleep", lambda s: None)
+    assert ssh.wait_for_login("1.2.3.4", "ubuntu", None, timeout=250, interval=5) is False

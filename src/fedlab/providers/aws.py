@@ -115,7 +115,8 @@ class AwsProvider(Provider):
             return
         sg_id = self._ensure_sg(ec2, node.role)
         self._ensure_key(ec2)
-        res = ec2.run_instances(
+        res = self._launch(
+            ec2,
             ImageId=self._ami(ec2, node.gpu),
             InstanceType=node.machine_type,
             MinCount=1,
@@ -133,6 +134,30 @@ class AwsProvider(Provider):
             TagSpecifications=[self._tags("instance", node.name), self._tags("volume", node.name)],
         )
         ec2.get_waiter("instance_running").wait(InstanceIds=[res["Instances"][0]["InstanceId"]])
+
+    @staticmethod
+    def _launch(ec2, **params) -> dict:
+        """`run_instances`, but on a capacity error try each default subnet (one per zone) before giving up."""
+        capacity = ("InsufficientInstanceCapacity", "Unsupported")  # the zone is full, or lacks the type
+        try:
+            return ec2.run_instances(**params)
+        except ClientError as e:
+            if e.response["Error"]["Code"] not in capacity:
+                raise
+            first = e
+        subnets = ec2.describe_subnets(Filters=[{"Name": "default-for-az", "Values": ["true"]}])["Subnets"]
+        tried = []
+        for subnet in sorted(subnets, key=lambda s: s["AvailabilityZone"]):
+            try:
+                return ec2.run_instances(SubnetId=subnet["SubnetId"], **params)
+            except ClientError as e:
+                if e.response["Error"]["Code"] not in capacity:
+                    raise
+                tried.append(subnet["AvailabilityZone"])
+        raise RuntimeError(
+            f"no capacity for {params['InstanceType']} (zones tried: {', '.join(tried) or 'default'}). "
+            "Capacity changes by the hour: retry later, or pick another region or instance type."
+        ) from first
 
     def start(self, node: Node) -> None:
         ec2 = self._ec2(node.location)
@@ -249,12 +274,19 @@ class AwsProvider(Provider):
             for n in (n for n in nodes if n.location == region):
 
                 def offered(n=n) -> str:
-                    r = ec2.describe_instance_type_offerings(
-                        LocationType="region", Filters=[{"Name": "instance-type", "Values": [n.machine_type]}]
-                    )
-                    if not r["InstanceTypeOfferings"]:
-                        raise RuntimeError(f"{n.machine_type} not offered in {region}")
-                    return n.machine_type
+                    # fedlab launches into the default subnets, one per zone: the type must be sold in one of them.
+                    zones = {
+                        o["Location"]
+                        for o in ec2.describe_instance_type_offerings(
+                            LocationType="availability-zone", Filters=[{"Name": "instance-type", "Values": [n.machine_type]}]
+                        )["InstanceTypeOfferings"]
+                    }
+                    subnets = ec2.describe_subnets(Filters=[{"Name": "default-for-az", "Values": ["true"]}])["Subnets"]
+                    usable = sorted(zones & {sn["AvailabilityZone"] for sn in subnets})
+                    missing = sorted({sn["AvailabilityZone"] for sn in subnets} - zones)
+                    if not usable:
+                        raise RuntimeError(f"{n.machine_type} is not sold in any zone fedlab can launch into in {region}")
+                    return f"{n.machine_type} in {', '.join(usable)}" + (f" (not sold in {', '.join(missing)})" if missing else "")
 
                 def can_launch(n=n) -> str:
                     # Also surfaces vCPU quota problems (VcpuLimitExceeded), common for G/VT GPU types.

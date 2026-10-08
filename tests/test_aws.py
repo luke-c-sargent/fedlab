@@ -82,3 +82,47 @@ def test_clients_only_open_ssh(aws, cfg):
     assert any("(client)" in a for a in aws.destroy([node], dry_run=True))
     aws.destroy([node])
     assert aws._find_sg(ec2, "client") is None
+
+
+def _capacity_error():
+    from botocore.exceptions import ClientError
+
+    return ClientError({"Error": {"Code": "InsufficientInstanceCapacity", "Message": "full"}}, "RunInstances")
+
+
+class _FakeEc2:
+    """run_instances fails unless the request names a subnet in `good_zone`."""
+
+    def __init__(self, good_zone):
+        self.good_zone, self.calls = good_zone, []
+
+    def run_instances(self, **kw):
+        self.calls.append(kw.get("SubnetId"))
+        if kw.get("SubnetId") == f"subnet-{self.good_zone}":
+            return {"Instances": [{"InstanceId": "i-1"}]}
+        raise _capacity_error()
+
+    def describe_subnets(self, **kw):
+        return {"Subnets": [{"SubnetId": f"subnet-{z}", "AvailabilityZone": z} for z in ("zone-c", "zone-b")]}
+
+
+def test_launch_tries_each_zone_after_a_capacity_error():
+    ec2 = _FakeEc2("zone-c")
+    assert AwsProvider._launch(ec2, InstanceType="g4dn.4xlarge")["Instances"][0]["InstanceId"] == "i-1"
+    assert ec2.calls == [None, "subnet-zone-b", "subnet-zone-c"]  # AWS's own pick, then each zone in order
+
+
+def test_launch_explains_when_every_zone_is_full():
+    with pytest.raises(RuntimeError, match=r"zones tried: zone-b, zone-c.*another region or instance type"):
+        AwsProvider._launch(_FakeEc2("none"), InstanceType="g4dn.4xlarge")
+
+
+def test_launch_does_not_swallow_other_errors():
+    from botocore.exceptions import ClientError
+
+    class Denied(_FakeEc2):
+        def run_instances(self, **kw):
+            raise ClientError({"Error": {"Code": "UnauthorizedOperation", "Message": "no"}}, "RunInstances")
+
+    with pytest.raises(ClientError, match="UnauthorizedOperation"):
+        AwsProvider._launch(Denied("x"), InstanceType="t")

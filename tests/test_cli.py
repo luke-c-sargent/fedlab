@@ -125,3 +125,27 @@ def test_experiment_can_destroy_after_failure_when_asked(tmp_path, monkeypatch):
     calls = _experiment_env(monkeypatch, tmp_path, fail_at="run")
     r = CliRunner().invoke(app, ["experiment", "--yes", "--destroy-on-failure"])
     assert r.exit_code == 1 and calls[-1] == "destroy"
+
+
+def test_prepare_explains_a_python_without_pandas(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "config.yaml").write_text(
+        "module: compass_tcga_gtex\nmodule_options:\n  compass_repo: /x\n  tcga_tsv: /x/t\n  gtex_tsv: /x/g\n  prep_python: /usr/bin/false\n"
+    )
+    r = CliRunner().invoke(app, ["prepare"])
+    assert r.exit_code == 1 and "cannot import numpy and pandas" in r.output and "prep_python" in r.output
+
+
+def test_check_reports_which_zones_sell_the_instance_type(tmp_path, monkeypatch):
+    from moto import mock_aws
+
+    from fedlab.providers.aws import AwsProvider
+
+    monkeypatch.setattr(AwsProvider, "_ami", lambda self, ec2, gpu=False: ec2.describe_images()["Images"][0]["ImageId"])
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "config.yaml").write_text("nodes:\n  - {provider: aws, location: us-east-1, role: server, machine_type: m5.xlarge}\n")
+    with mock_aws():
+        r = CliRunner().invoke(app, ["check"])
+    assert r.exit_code == 0, r.output
+    text = " ".join(r.output.split())  # rich wraps long lines
+    assert "machine type m5.xlarge in us-east-1" in text

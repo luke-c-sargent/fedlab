@@ -61,7 +61,10 @@ class CompassTcgaGtexModule(FlowerModule):
         if len(servers) != 1:
             problems.append("exactly one node must have role: server")
         if sites != sorted(SITES):
-            problems.append(f"clients must have exactly the sites {list(SITES)}; found {sites}")
+            problems.append(
+                f"clients must have exactly the sites {list(SITES)}; found {sites}. "
+                "Set `site: tcga` on one client and `site: gtex` on the other under `nodes:` in config.yaml."
+            )
         if self.opt["backend"] not in ("compass", "stub"):
             problems.append("module_options.backend must be 'compass' or 'stub'")
         if self.stub:
@@ -93,6 +96,12 @@ class CompassTcgaGtexModule(FlowerModule):
             if key not in self.opt:
                 raise ValueError(f"module_options.{key} is required for `fedlab prepare`")
         python = str(self.opt.get("prep_python", sys.executable))
+        probe = subprocess.run([python, "-c", "import numpy, pandas"], capture_output=True, text=True)
+        if probe.returncode:
+            raise RuntimeError(
+                f"{python} cannot import numpy and pandas ({(probe.stderr.strip().splitlines() or ["the import failed"])[-1]}). "
+                "Set module_options.prep_python to a Python that has them, or run `uv sync`."
+            )
         scripts = self.train_root / "federated_test" / "scripts"
         config = self.train_root / "centralized_test" / "config" / "paper_pretraining.json"
         clients = self.prepared / "clients"

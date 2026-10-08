@@ -44,9 +44,25 @@ def test_invalid_run_name():
         Settings(run_name="Bad_Name")
 
 
-def test_cloud_init_installs_nvidia_driver_only_when_asked():
+def test_cloud_init_installs_nvidia_driver_only_when_asked(tmp_path):
+    import subprocess
+
+    import yaml
+
     from fedlab import cloud_init
 
     assert "ubuntu-drivers" not in cloud_init.render("ubuntu")
-    gpu = cloud_init.render("ubuntu", install_nvidia_driver=True)
-    assert gpu.index("ubuntu-drivers") < gpu.index("fedlab-ready") < gpu.index("shutdown -r")
+    text = cloud_init.render("ubuntu", install_nvidia_driver=True)
+    doc = yaml.safe_load(text)  # must stay valid cloud-config
+    assert "ubuntu-drivers-common" in doc["packages"]  # the GCP image does not ship the tool
+    script = doc["write_files"][0]["content"]
+    assert doc["write_files"][0]["path"] == "/usr/local/sbin/fedlab-gpu-driver.sh"
+    assert script.index("ubuntu-drivers install --gpgpu") < script.index("nvidia-utils-") < script.index("shutdown -r")
+    assert "fedlab-driver-failed" in script
+    commands = [c[2] for c in doc["runcmd"]]
+    assert commands.index("/usr/local/sbin/fedlab-gpu-driver.sh") < commands.index("touch /var/lib/fedlab-ready")
+    path = tmp_path / "gpu.sh"
+    path.write_text(script)
+    assert subprocess.run(["bash", "-n", str(path)]).returncode == 0  # valid shell
+    plain = yaml.safe_load(cloud_init.render("ubuntu"))
+    assert "write_files" not in plain and "ubuntu-drivers-common" not in plain["packages"]

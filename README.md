@@ -71,8 +71,8 @@ Options (`module_options`):
 | option | default | meaning |
 |---|---|---|
 | `compass_repo` | required | Your checkout of `federated-learning-model`. fedlab uploads `compass_hpc_foundation_model_train/{centralized_test,federated_test}` from it. |
-| `tcga_tsv`, `gtex_tsv` | required for `prepare` | The processed expression files. They never leave your machine. |
-| `prepared_root` | `.fedlab/compass/prepared` | Output of `prepare`. |
+| `tcga_tsv`, `gtex_tsv` | required for `prepare` | The source expression TSVs: the `processed/*_compass_tpm.tsv` files of the original project. They are inputs, not outputs. They never leave your machine. |
+| `prepared_root` | `.fedlab/compass/prepared` | Output of `prepare`: the per-site caches, the scaler, and the manifest. Use a new directory if you change `seed`. |
 | `prep_python` | this Python | Interpreter with numpy and pandas for `prepare`. |
 | `rounds`, `patience`, `local_epochs`, `seed` | 100, 10, 1, 42 | Training schedule. |
 | `micro_batch_size`, `num_workers`, `cpu_threads` | 64, 0, 8 | Client runtime. |

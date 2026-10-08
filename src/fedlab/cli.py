@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 import typer
+from rich.markup import escape
 from rich.console import Console
 from rich.table import Table
 
@@ -83,10 +84,11 @@ def _run_parallel(ctx: Ctx, label: str, fn: Callable[[Node], None]) -> list[str]
 def _finish(ctx: Ctx, errors: list[str], wait_ssh: bool = False) -> None:
     infos = ctx.refresh_local_files()
     if wait_ssh:
-        for i in infos:
-            if i.name in {n.name for n in ctx.nodes} and i.public_ip:
-                ok = sshmod.wait_for_ssh(i.public_ip)
-                console.print(f"ssh {i.name}: {'[green]reachable' if ok else '[red]not reachable yet'}")
+        waiting = [i for i in infos if i.name in {n.name for n in ctx.nodes} and i.public_ip]
+        with ThreadPoolExecutor() as ex:
+            results = list(ex.map(lambda i: sshmod.wait_for_login(i.public_ip, ctx.cfg.ssh_user, ctx.key), waiting))
+        for i, ok in zip(waiting, results):
+            console.print(f"ssh {i.name}: {'[green]reachable' if ok else '[red]not reachable yet'}")
     _print_status(ctx.cfg, infos)
     if errors:
         for e in errors:
@@ -248,7 +250,7 @@ def _destroy(ctx: Ctx, yes: bool = False, dry_run: bool = False) -> None:
     else:
         console.print("[bold]Will delete:[/]")
         for line in plan:
-            console.print(f"  {line}")
+            console.print(f"  {escape(line)}")  # lines start with "[aws region]", which rich would read as markup
     if dry_run or not plan:
         return
     if not yes and not typer.confirm(f"Delete all of the above (run '{ctx.cfg.run_name}')?"):
@@ -337,7 +339,11 @@ def prepare(config: Optional[Path] = ConfigOpt):
         module = get_module(cfg)
     except ValueError as e:
         raise typer.BadParameter(str(e))
-    module.prepare(_log)
+    try:
+        module.prepare(_log)
+    except (ValueError, RuntimeError, subprocess.CalledProcessError) as e:
+        console.print("[red]prepare failed:[/]", escape(str(e)))
+        raise typer.Exit(1)
 
 
 @app.command()

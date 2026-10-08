@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import socket
 import subprocess
 import time
 from dataclasses import dataclass
@@ -138,20 +137,6 @@ def write_nodes_json(cfg: Settings, infos: list[NodeInfo], key: Keypair) -> Path
     return cfg.nodes_file
 
 
-def wait_for_ssh(host: str, timeout: float = 300, port: int = 22) -> bool:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        try:
-            with socket.create_connection((host, port), timeout=5) as s:
-                s.settimeout(5)
-                if s.recv(4).startswith(b"SSH"):
-                    return True
-        except OSError:
-            pass
-        time.sleep(5)
-    return False
-
-
 def probe_ssh(host: str, user: str, key: Keypair, timeout: float = 10) -> tuple[bool, str]:
     """One-shot reachability + auth check: runs `true` over SSH with the repo key. Returns (ok, detail)."""
     cmd = [
@@ -169,3 +154,18 @@ def probe_ssh(host: str, user: str, key: Keypair, timeout: float = 10) -> tuple[
     if r.returncode == 0:
         return True, f"{(time.monotonic() - start) * 1000:.0f} ms"
     return False, (r.stderr.strip().splitlines() or [f"ssh exited {r.returncode}"])[-1]
+
+
+def wait_for_login(host: str, user: str, key: Keypair, timeout: float = 300, interval: float = 5) -> bool:
+    """Wait until an SSH login with the repo key works.
+
+    This runs the real `ssh` program, so it honors `~/.ssh/config` (for example a ProxyJump host).
+    A raw TCP connection to port 22 would not, and it fails on networks that only allow SSH via a jump host.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        if probe_ssh(host, user, key)[0]:
+            return True
+        if time.monotonic() + interval >= deadline:
+            return False
+        time.sleep(interval)
