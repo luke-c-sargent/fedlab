@@ -30,10 +30,15 @@ runcmd:
 # leaves `fedlab-driver-failed` and skips the reboot, so `wait_ready` can stop at once instead of timing out.
 # This text is not passed through str.format, so shell braces are safe.
 NVIDIA_PACKAGE = "  - ubuntu-drivers-common\n"
-NVIDIA_SCRIPT_FILE = """  - path: /usr/local/sbin/fedlab-gpu-driver.sh
+NVIDIA_SCRIPT_FILE = r"""  - path: /usr/local/sbin/fedlab-gpu-driver.sh
     permissions: '0755'
     content: |
       #!/bin/bash
+      # The regional GCE mirror serves large uncached packages at ~100 KB/s (the NVIDIA driver is ~220 MB);
+      # the main archive is ~150x faster. The pattern matches nothing on AWS.
+      sed -i 's|http://[a-z0-9-]*\.gce\.archive\.ubuntu\.com/ubuntu|http://archive.ubuntu.com/ubuntu|g' \
+        /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources 2>/dev/null
+      apt-get update -qq
       ubuntu-drivers install --gpgpu || { touch /var/lib/fedlab-driver-failed; exit 0; }
       series=$(dpkg -l 'nvidia-kernel-common-*' | awk '/^ii/{print $2; exit}' | sed 's/nvidia-kernel-common-//')
       [ -z "$series" ] || apt-get install -y "nvidia-utils-$series" || true

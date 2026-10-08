@@ -58,6 +58,7 @@ def test_cloud_init_installs_nvidia_driver_only_when_asked(tmp_path):
     files = {f["path"]: f["content"] for f in doc["write_files"]}
     script = files["/usr/local/sbin/fedlab-gpu-driver.sh"]
     assert "Acquire::Retries" in files["/etc/apt/apt.conf.d/99fedlab"]
+    assert script.index("archive.ubuntu.com/ubuntu|g") < script.index("apt-get update") < script.index("ubuntu-drivers install --gpgpu")
     assert script.index("ubuntu-drivers install --gpgpu") < script.index("nvidia-utils-") < script.index("shutdown -r")
     assert "fedlab-driver-failed" in script
     commands = [c[2] for c in doc["runcmd"]]
