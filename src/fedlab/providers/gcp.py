@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import concurrent.futures
+import time
 from datetime import datetime
+from typing import Callable
 
 from google.api_core.exceptions import NotFound
 from google.cloud import compute_v1
@@ -152,26 +155,29 @@ class GcpProvider(Provider):
             since = datetime.fromisoformat(ts) if ts else None
         return NodeInfo(node.name, "gcp", node.location, state, public_ip=ip, running_since=since)
 
-    def destroy(self, nodes: list[Node], dry_run: bool = False) -> list[str]:
+    def destroy(self, nodes: list[Node], dry_run: bool = False, log: Callable[[str], None] | None = None) -> list[str]:
+        log = log or (lambda message: None)
         actions: list[str] = []
         flt = f"labels.{TAG_KEY} = {self.cfg.run_name}"
         instances = compute_v1.InstancesClient()
         disks = compute_v1.DisksClient()
         for zone in sorted({n.location for n in nodes}):
+            tag = f"[gcp {zone}]"
             ops = []
             for i in instances.list(request=compute_v1.ListInstancesRequest(project=self.project, zone=zone, filter=flt)):
-                actions.append(f"[gcp {zone}] delete instance {i.name}")
+                actions.append(f"{tag} delete instance {i.name}")
                 if not dry_run:
-                    ops.append(
-                        instances.delete(project=self.project, zone=zone, instance=i.name)
-                    )
-            for op in ops:
-                op.result()
+                    log(f"{tag} deleting instance {i.name}")
+                    ops.append((i.name, instances.delete(project=self.project, zone=zone, instance=i.name)))
+            for name, op in ops:
+                self._await(op, f"deleting instance {name}", log, tag)
+                log(f"{tag} instance {name} deleted")
             for d in disks.list(request=compute_v1.ListDisksRequest(project=self.project, zone=zone, filter=flt)):
-                actions.append(f"[gcp {zone}] delete leftover disk {d.name}")
+                actions.append(f"{tag} delete leftover disk {d.name}")
                 if not dry_run:
+                    log(f"{tag} deleting leftover disk {d.name}")
                     try:
-                        disks.delete(project=self.project, zone=zone, disk=d.name).result()
+                        self._await(disks.delete(project=self.project, zone=zone, disk=d.name), f"deleting disk {d.name}", log, tag)
                     except NotFound:
                         pass
         fw = compute_v1.FirewallsClient()
@@ -180,10 +186,22 @@ class GcpProvider(Provider):
                 fw.get(project=self.project, firewall=self._fw_name(role))
                 actions.append(f"[gcp] delete firewall rule {self._fw_name(role)}")
                 if not dry_run:
-                    fw.delete(project=self.project, firewall=self._fw_name(role)).result()
+                    log(f"[gcp] deleting firewall rule {self._fw_name(role)}")
+                    self._await(fw.delete(project=self.project, firewall=self._fw_name(role)), "deleting firewall rule", log, "[gcp]")
             except NotFound:
                 pass
         return actions
+
+    @staticmethod
+    def _await(operation, what: str, log: Callable[[str], None], tag: str, beat: float = 15) -> None:
+        """Wait for a long-running operation, logging every `beat` seconds so a slow one is visible."""
+        started = time.monotonic()
+        while True:
+            try:
+                operation.result(timeout=beat)
+                return
+            except concurrent.futures.TimeoutError:
+                log(f"{tag}   still {what}, {time.monotonic() - started:.0f}s")
 
     def _gpu_quota(self, node: Node) -> str:
         metric = f"NVIDIA_{node.accelerator.split('-')[-1].upper()}_GPUS"

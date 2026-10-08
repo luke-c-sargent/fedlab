@@ -256,14 +256,25 @@ def _destroy(ctx: Ctx, yes: bool = False, dry_run: bool = False) -> None:
         return
     if not yes and not typer.confirm(f"Delete all of the above (run '{ctx.cfg.run_name}')?"):
         raise typer.Abort()
+
+    _phase(1, 2, f"delete {len(plan)} resource(s) ({', '.join(sorted(by_provider))} in parallel)")
+    started = time.monotonic()
+    with ThreadPoolExecutor() as ex:  # the clouds are independent, and each deletion mostly waits
+        list(ex.map(lambda item: ctx.provider(item[0]).destroy(item[1], dry_run=False, log=_log), by_provider.items()))
+    _phase(2, 2, "verify that nothing is left")
+    leftovers: list[str] = []
     for prov, nodes in by_provider.items():
-        ctx.provider(prov).destroy(nodes, dry_run=False)
+        leftovers += ctx.provider(prov).destroy(nodes, dry_run=True)
     infos = [NodeInfo(n.name, n.provider, n.location, "absent") for n in ctx.nodes]
     sshmod.write_nodes_json(ctx.cfg, infos, ctx.key)
     sshmod.write_ssh_config(ctx.cfg, infos, ctx.key)
-    console.print("[green]Destroyed.[/] (Local keypair in .fedlab/ was kept; delete it manually if desired.)")
-
-
+    took = int(time.monotonic() - started)
+    if leftovers:
+        console.print(f"[yellow]Destroy finished in {took}s but these remain; run `fedlab destroy` again:[/]")
+        for line in leftovers:
+            console.print(f"  {escape(line)}")
+        raise typer.Exit(1)
+    console.print(f"[green]Destroyed in {took}s; nothing tagged for '{ctx.cfg.run_name}' remains.[/] (The local keypair in .fedlab/ was kept.)")
 
 
 @app.command()

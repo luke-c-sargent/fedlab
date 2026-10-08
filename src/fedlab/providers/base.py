@@ -3,7 +3,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
     from ..config import Node, Settings
@@ -46,10 +46,11 @@ class Provider(ABC):
     def describe(self, node: Node) -> NodeInfo: ...
 
     @abstractmethod
-    def destroy(self, nodes: list[Node], dry_run: bool = False) -> list[str]:
+    def destroy(self, nodes: list[Node], dry_run: bool = False, log: Callable[[str], None] | None = None) -> list[str]:
         """Delete every resource tagged for this run in the nodes' locations.
 
         Returns human-readable descriptions of what was (or with dry_run, would be) deleted.
+        `log` receives a progress line before each deletion, while waiting, and after it finishes.
         """
 
     @abstractmethod

@@ -77,3 +77,19 @@ def test_server_firewall_opens_flower_ports(cfg):
         prov._ensure_firewall("server")
     fw = fc.return_value.insert.call_args.kwargs["firewall_resource"]
     assert fw.name == "fedlearn-server" and list(fw.allowed[0].ports) == ["22", "9092"]
+
+
+def test_await_logs_while_an_operation_is_slow(monkeypatch):
+    import concurrent.futures
+
+    class Slow:
+        calls = 0
+
+        def result(self, timeout=None):
+            Slow.calls += 1
+            if Slow.calls < 3:
+                raise concurrent.futures.TimeoutError()
+
+    messages = []
+    GcpProvider._await(Slow(), "deleting instance vm1", messages.append, "[gcp z]", beat=15)
+    assert len(messages) == 2 and "still deleting instance vm1" in messages[0]

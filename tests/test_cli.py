@@ -149,3 +149,41 @@ def test_check_reports_which_zones_sell_the_instance_type(tmp_path, monkeypatch)
     assert r.exit_code == 0, r.output
     text = " ".join(r.output.split())  # rich wraps long lines
     assert "machine type m5.xlarge in us-east-1" in text
+
+
+class _FakeCloud:
+    """destroy(): the plan comes from dry runs; a real run logs progress and (optionally) leaves something behind."""
+
+    def __init__(self, leaves=False):
+        self.items, self.leaves = ["[aws r] delete instance a"], leaves
+
+    def destroy(self, nodes, dry_run=False, log=None):
+        if not dry_run:
+            log("[aws r] terminating 1 instance(s)")
+            if not self.leaves:
+                self.items = []
+        return list(self.items)
+
+
+def _destroy_env(monkeypatch, tmp_path, leaves):
+    from fedlab import cli
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "config.yaml").write_text("nodes:\n  - {provider: aws, location: us-east-1, role: server}\n")
+    cloud = _FakeCloud(leaves)
+    monkeypatch.setattr(cli, "get_provider", lambda *a: cloud)
+
+
+def test_destroy_shows_phases_progress_and_verifies(tmp_path, monkeypatch):
+    _destroy_env(monkeypatch, tmp_path, leaves=False)
+    r = CliRunner().invoke(app, ["destroy", "--yes"])
+    assert r.exit_code == 0, r.output
+    assert "[aws r] delete instance a" in r.output  # the plan keeps its [aws region] prefix
+    assert "1/2" in r.output and "2/2" in r.output and "terminating 1 instance(s)" in r.output
+    assert "nothing tagged for 'fedlearn' remains" in r.output
+
+
+def test_destroy_fails_loudly_if_something_is_left(tmp_path, monkeypatch):
+    _destroy_env(monkeypatch, tmp_path, leaves=True)
+    r = CliRunner().invoke(app, ["destroy", "--yes"])
+    assert r.exit_code == 1 and "these remain" in r.output and "delete instance a" in r.output

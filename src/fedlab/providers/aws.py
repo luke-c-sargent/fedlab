@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from typing import Callable
 
 import boto3
 from botocore.exceptions import ClientError
@@ -195,43 +196,68 @@ class AwsProvider(Provider):
             running_since=inst["LaunchTime"] if state == "running" else None,
         )
 
-    def destroy(self, nodes: list[Node], dry_run: bool = False) -> list[str]:
+    def destroy(self, nodes: list[Node], dry_run: bool = False, log: Callable[[str], None] | None = None) -> list[str]:
+        log = log or (lambda message: None)
         actions: list[str] = []
         for region in sorted({n.location for n in nodes}):
             ec2 = self._ec2(region)
+            tag = f"[aws {region}]"
             res = ec2.describe_instances(
                 Filters=[self._tag_filter, {"Name": "instance-state-name", "Values": LIVE_STATES}]
             )
             ids = [i["InstanceId"] for r in res["Reservations"] for i in r["Instances"]]
             if ids:
-                actions.append(f"[aws {region}] terminate instances {ids}")
+                actions.append(f"{tag} terminate instances {ids}")
                 if not dry_run:
+                    log(f"{tag} terminating {len(ids)} instance(s): {', '.join(ids)}")
                     ec2.terminate_instances(InstanceIds=ids)
-                    ec2.get_waiter("instance_terminated").wait(InstanceIds=ids)
+                    self._wait_terminated(ec2, ids, log, tag)
+                    log(f"{tag} instances terminated")
 
             for role in ("server", "client"):
                 sg = self._find_sg(ec2, role)
                 if sg:
-                    actions.append(f"[aws {region}] delete security group {sg['GroupId']} ({role})")
+                    actions.append(f"{tag} delete security group {sg['GroupId']} ({role})")
                     if not dry_run:
-                        self._delete_sg(ec2, sg["GroupId"])
+                        log(f"{tag} deleting security group {sg['GroupId']} ({role})")
+                        self._delete_sg(ec2, sg["GroupId"], log, tag)
 
             keys = ec2.describe_key_pairs(Filters=[self._tag_filter])["KeyPairs"]
             for k in keys:
-                actions.append(f"[aws {region}] delete key pair {k['KeyName']}")
+                actions.append(f"{tag} delete key pair {k['KeyName']}")
                 if not dry_run:
+                    log(f"{tag} deleting key pair {k['KeyName']}")
                     ec2.delete_key_pair(KeyName=k["KeyName"])
 
             vols = ec2.describe_volumes(Filters=[self._tag_filter])["Volumes"]
             for v in vols:
-                actions.append(f"[aws {region}] delete leftover volume {v['VolumeId']}")
+                actions.append(f"{tag} delete leftover volume {v['VolumeId']}")
                 if not dry_run:
+                    log(f"{tag} deleting leftover volume {v['VolumeId']}")
                     try:
                         ec2.delete_volume(VolumeId=v["VolumeId"])
                     except ClientError as e:
                         if e.response["Error"]["Code"] != "InvalidVolume.NotFound":
                             raise
         return actions
+
+    @staticmethod
+    def _wait_terminated(ec2, ids: list[str], log: Callable[[str], None], tag: str, beat: float = 10, timeout: float = 900) -> None:
+        """Poll until every instance is terminated, logging the states so a slow shutdown is visible."""
+        started = time.monotonic()
+        while True:
+            states = {
+                i["InstanceId"]: i["State"]["Name"]
+                for r in ec2.describe_instances(InstanceIds=ids)["Reservations"]
+                for i in r["Instances"]
+            }
+            if all(state == "terminated" for state in states.values()):
+                return
+            elapsed = time.monotonic() - started
+            if elapsed > timeout:
+                raise TimeoutError(f"{tag} instances still not terminated after {timeout:.0f}s: {states}")
+            log(f"{tag}   waiting for termination, {elapsed:.0f}s: " + ", ".join(f"{k} {v}" for k, v in states.items()))
+            time.sleep(beat)
 
     def check(self, nodes: list[Node]) -> list[CheckResult]:
         results: list[CheckResult] = []
@@ -312,7 +338,7 @@ class AwsProvider(Provider):
         return results
 
     @staticmethod
-    def _delete_sg(ec2, sg_id: str) -> None:
+    def _delete_sg(ec2, sg_id: str, log: Callable[[str], None] = lambda message: None, tag: str = "") -> None:
         # ENIs from just-terminated instances can linger briefly.
         for attempt in range(12):
             try:
@@ -324,4 +350,5 @@ class AwsProvider(Provider):
                     return
                 if code != "DependencyViolation" or attempt == 11:
                     raise
+                log(f"{tag}   security group is still in use by a network interface; retrying ({attempt + 1}/12)")
                 time.sleep(5)

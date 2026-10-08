@@ -126,3 +126,44 @@ def test_launch_does_not_swallow_other_errors():
 
     with pytest.raises(ClientError, match="UnauthorizedOperation"):
         AwsProvider._launch(Denied("x"), InstanceType="t")
+
+
+def test_destroy_reports_progress_and_waits_visibly(aws, cfg, monkeypatch):
+    node = _node(cfg)
+    ec2 = boto3.client("ec2", region_name=node.location)
+    aws.up(node)
+    messages = []
+    aws.destroy([node], log=messages.append)
+    text = "\n".join(messages)
+    assert "terminating 1 instance(s)" in text and "instances terminated" in text
+    assert "deleting security group" in text and "deleting key pair" in text
+    assert aws.destroy([node], dry_run=True) == []  # the verification pass finds nothing
+
+    # a slow shutdown is visible: states are logged each poll until the instance is terminated
+    states = iter(["shutting-down", "shutting-down", "terminated"])
+
+    class Slow:
+        def describe_instances(self, InstanceIds):
+            return {"Reservations": [{"Instances": [{"InstanceId": InstanceIds[0], "State": {"Name": next(states)}}]}]}
+
+    waited = []
+    monkeypatch.setattr("fedlab.providers.aws.time.sleep", lambda s: waited.append(s))
+    aws._wait_terminated(Slow(), ["i-1"], messages.append, "[aws x]", beat=10)
+    assert waited == [10, 10] and any("shutting-down" in m for m in messages)
+
+
+def test_security_group_retries_are_logged(monkeypatch):
+    from botocore.exceptions import ClientError
+
+    class Busy:
+        calls = 0
+
+        def delete_security_group(self, GroupId):
+            Busy.calls += 1
+            if Busy.calls < 3:
+                raise ClientError({"Error": {"Code": "DependencyViolation", "Message": "in use"}}, "DeleteSecurityGroup")
+
+    messages = []
+    monkeypatch.setattr("fedlab.providers.aws.time.sleep", lambda s: None)
+    AwsProvider._delete_sg(Busy(), "sg-1", messages.append, "[aws x]")
+    assert len(messages) == 2 and "still in use" in messages[0]
