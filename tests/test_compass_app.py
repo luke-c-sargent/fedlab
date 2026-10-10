@@ -118,3 +118,12 @@ def test_optimizer_state_round_trips_through_packing():
     assert float(restored["state"][0]["step"]) == 7
     np.testing.assert_array_equal(restored["state"][0]["exp_avg"], state["state"][0]["exp_avg"])
     assert restored["param_groups"][0]["betas"] == [0.9, 0.999]  # tuples become lists; Adam accepts both
+
+
+def test_oom_advice_names_a_smaller_divisor_and_keeps_the_effective_batch():
+    assert logic.is_cuda_oom(type("OutOfMemoryError", (RuntimeError,), {})("x"))
+    assert logic.is_cuda_oom(RuntimeError("CUDA out of memory. Tried to allocate 246 MiB"))
+    assert not logic.is_cuda_oom(ValueError("something else"))
+    advice = logic.oom_advice(64, 128)
+    assert "micro_batch_size=64" in advice and "try 32" in advice and "stays 128" in advice
+    assert "try 8" in logic.oom_advice(16, 128) and "try 4" in logic.oom_advice(8, 128)

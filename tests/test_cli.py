@@ -1,3 +1,5 @@
+import pytest
+import typer
 from typer.testing import CliRunner
 
 from fedlab.cli import app
@@ -187,3 +189,18 @@ def test_destroy_fails_loudly_if_something_is_left(tmp_path, monkeypatch):
     _destroy_env(monkeypatch, tmp_path, leaves=True)
     r = CliRunner().invoke(app, ["destroy", "--yes"])
     assert r.exit_code == 1 and "these remain" in r.output and "delete instance a" in r.output
+
+
+def test_operational_errors_print_one_short_message(monkeypatch, capsys):
+    from fedlab import cli
+    from fedlab.remote import RemoteError
+
+    def boom(*a, **k):
+        raise RemoteError("node-1", "mkdir -p /x", 255, "Connection timed out during banner exchange\n")
+
+    monkeypatch.setattr(typer.main, "get_command", lambda self: boom)  # make the whole CLI raise
+    monkeypatch.delenv("FEDLAB_DEBUG", raising=False)
+    with pytest.raises(SystemExit) as exit_info:
+        cli.app()
+    out = capsys.readouterr().out
+    assert exit_info.value.code == 1 and "banner exchange" in out and "FEDLAB_DEBUG" in out and "Traceback" not in out

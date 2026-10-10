@@ -14,7 +14,7 @@ SITES = {"tcga": ("TCGA", list(range(33))), "gtex": ("GTEx", [33])}
 
 @dataclass
 class OptimizerState:
-    """A framework-neutral snapshot of a local optimizer, small enough to keep in `context.state`."""
+    """A framework-neutral snapshot of a local optimizer."""
 
     arrays: list[np.ndarray]
     meta: str  # JSON

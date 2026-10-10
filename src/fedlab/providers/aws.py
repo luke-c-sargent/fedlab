@@ -111,7 +111,13 @@ class AwsProvider(Provider):
     # ---- Provider API --------------------------------------------------
     def up(self, node: Node) -> None:
         ec2 = self._ec2(node.location)
-        if self._find(ec2, node):
+        existing = self._find(ec2, node)
+        if existing:
+            if existing["InstanceType"] != node.machine_type:
+                raise RuntimeError(
+                    f"{node.name} already exists as {existing['InstanceType']}, but the config says {node.machine_type}. "
+                    "A VM's type is not changed in place: run `fedlab destroy` first."
+                )
             self.start(node)
             return
         sg_id = self._ensure_sg(ec2, node.role)

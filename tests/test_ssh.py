@@ -34,7 +34,7 @@ def test_ssh_config_and_nodes_json(cfg):
 def test_wait_for_login_retries_until_ssh_works(monkeypatch):
     attempts = []
 
-    def fake_probe(host, user, key, timeout=10):
+    def fake_probe(host, user, key, timeout=10, proxy="auto"):
         attempts.append(host)
         return (len(attempts) >= 3, "")
 
@@ -50,3 +50,25 @@ def test_wait_for_login_gives_up_at_the_deadline(monkeypatch):
     monkeypatch.setattr(ssh.time, "monotonic", lambda: next(clock))
     monkeypatch.setattr(ssh.time, "sleep", lambda s: None)
     assert ssh.wait_for_login("1.2.3.4", "ubuntu", None, timeout=250, interval=5) is False
+
+
+def test_probe_ssh_leaves_the_users_ssh_config_alone(cfg, monkeypatch):
+    key = ssh.ensure_keypair(cfg)
+    seen = []
+    monkeypatch.setattr(ssh.subprocess, "run", lambda cmd, **k: seen.append(cmd) or type("R", (), {"returncode": 0, "stderr": ""})())
+    assert ssh.probe_ssh("1.2.3.4", "ubuntu", key)[0] is True
+    assert "-F" not in seen[0] and "ProxyJump=none" not in seen[0]  # ambient config applies
+    assert "IdentitiesOnly=yes" in seen[0] and "ubuntu@1.2.3.4" in seen[0] and str(key.private_path) in seen[0]
+
+
+def test_ssh_host_and_rsync_leave_the_users_ssh_config_alone(cfg, monkeypatch):
+    from fedlab import remote
+
+    key = ssh.ensure_keypair(cfg)
+    host = remote.SshHost("n", "1.2.3.4", "ubuntu", key)
+    assert "-F" not in host._ssh and "ProxyJump=none" not in host._ssh
+    seen = []
+    monkeypatch.setattr(remote.subprocess, "run", lambda cmd, **k: seen.append(cmd) or type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})())
+    host._rsync("a", "b")
+    inner = seen[0][seen[0].index("-e") + 1]
+    assert inner.startswith("ssh -i ") and "-F" not in inner.split() and "ProxyJump" not in inner

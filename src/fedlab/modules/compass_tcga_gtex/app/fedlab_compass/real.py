@@ -1,15 +1,12 @@
-"""Real training backend: COMPASS (pinned source) + torch, ported from the original Flower 1.8 scripts.
+"""Real training backend: COMPASS (pinned source) + torch.
 
-Ported from `federated_test/scripts/{03_flower_client,04_flower_server}.py` for the default path only
+Ports `federated_test/scripts/{03_flower_client,04_flower_server}.py` for the default path only
 (historical_v1 protocol, scratch initialization, random-within-context negatives, full GTEx).
-Everything that is not Flower-specific is reused from `federated_common` and `centralized_test`
-unchanged. Imports are lazy so the rest of the app works without torch.
+Everything that is not Flower-specific comes from `federated_common` and `centralized_test`.
+Imports are lazy so the rest of the app works without torch.
 
-Differences from the original, all forced by the Message API running each message in a fresh process:
-  * the Adam state travels in `context.state` instead of living in the client process;
-  * the torch RNG (dropout) is re-seeded per round instead of running on from process start;
-  * the per-process audit receipts (hashes of every payload) are dropped; the prepared data is
-    verified once on each node at deploy time (see `verify.py`).
+Each message runs in a fresh process: optimizer state is stored between rounds (see `client_app.py`),
+the torch RNG is seeded per round, and prepared data is verified once per node at deploy time (see `verify.py`).
 """
 
 from __future__ import annotations
@@ -24,7 +21,7 @@ from pathlib import Path
 import numpy as np
 
 from .contract import SITES, BestModel, ClientBackend, FitResult, OptimizerState, RoundRecord, ServerBackend, Validation
-from .logic import pack_optimizer_state, unpack_optimizer_state
+from .logic import is_cuda_oom, oom_advice, pack_optimizer_state, unpack_optimizer_state
 
 CODE_ENV = "FEDLAB_COMPASS_CODE"  # dir holding centralized_test/ and federated_test/
 SOURCE_ENV = "COMPASS_SOURCE_DIR"  # the pinned COMPASS git checkout
@@ -111,7 +108,7 @@ class RealClient(ClientBackend):
         self.training = env.config["training"]
         self.micro_batch = int(run_config["micro-batch-size"])
         self.num_workers = int(run_config["num-workers"])
-        effective_batch = int(self.training["batch_size"])
+        effective_batch = self.effective_batch = int(self.training["batch_size"])
         if self.micro_batch > effective_batch or effective_batch % self.micro_batch:
             raise ValueError("micro-batch size must divide the configured effective batch size")
         self.accumulation_steps = effective_batch // self.micro_batch
@@ -167,7 +164,26 @@ class RealClient(ClientBackend):
         )
 
     # ---- ClientBackend -----------------------------------------------------------------------
+    def _explain_oom(self, error: Exception):
+        raise RuntimeError(oom_advice(self.micro_batch, self.effective_batch)) from error
+
     def fit(self, arrays, config, optimizer_state: OptimizerState | None) -> FitResult:
+        try:
+            return self._fit(arrays, config, optimizer_state)
+        except Exception as error:
+            if is_cuda_oom(error):
+                self._explain_oom(error)
+            raise
+
+    def evaluate(self, arrays, config) -> dict:
+        try:
+            return self._evaluate(arrays, config)
+        except Exception as error:
+            if is_cuda_oom(error):
+                self._explain_oom(error)
+            raise
+
+    def _fit(self, arrays, config, optimizer_state: OptimizerState | None) -> FitResult:
         from torch.utils.data import DataLoader
 
         env = self.env
@@ -223,7 +239,7 @@ class RealClient(ClientBackend):
         }
         return FitResult(updated, pack_optimizer_state(optimizer.state_dict()), metrics)
 
-    def evaluate(self, arrays, config) -> dict:
+    def _evaluate(self, arrays, config) -> dict:
         from torch.utils.data import DataLoader
 
         env = self.env

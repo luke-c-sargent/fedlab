@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import re
 from abc import abstractmethod
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import Callable
 
 from ..flower.federation import Federation
 from .base import Deployment, FLModule, Site
@@ -13,6 +15,26 @@ PYTHON_VERSION = "3.11"  # Flower 1.33 needs >= 3.11
 ENV_DIR = "fl"  # virtualenv at ~/fl on every node
 APP_DIR = "app"  # the Flower app on the server at ~/app
 RESULTS_DIR = "results"  # service-owned output root on the server at ~/results
+
+
+PACKAGE_LINE = re.compile(r"^\s*[+~-] \S+==\S+\s*$")  # uv's "+ package==1.2.3" listing
+
+
+def quiet_packages(emit: Callable[[str], None]) -> Callable[[str], None]:
+    """Forward installer output, but replace uv's per-package listing with one summary line."""
+    count = 0
+
+    def on_line(line: str) -> None:
+        nonlocal count
+        if PACKAGE_LINE.match(line):
+            count += 1
+        elif line.strip():
+            if count:
+                emit(f"{count} package change(s) listed")
+                count = 0
+            emit(line)
+
+    return on_line
 
 
 class FlowerModule(FLModule):
@@ -39,8 +61,7 @@ class FlowerModule(FLModule):
 
     def service_env(self, d: Deployment, site: Site) -> dict[str, str]:
         """Extra environment for the node's Flower services (and so for the app code)."""
-        env = {"FEDLAB_OUTPUT_DIR": f"{site.host.home}/{RESULTS_DIR}"} if site is d.server else {}
-        return env
+        return {"FEDLAB_OUTPUT_DIR": f"{site.host.home}/{RESULTS_DIR}"} if site is d.server else {}
 
     def stage_site(self, d: Deployment, site: Site) -> None:
         """Upload module-specific code and data to one node."""
@@ -60,7 +81,7 @@ class FlowerModule(FLModule):
             "command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 sh\n"
             f"test -x {host.home}/{ENV_DIR}/bin/python || uv venv --python {PYTHON_VERSION} {host.home}/{ENV_DIR}\n"
             f"uv pip install --python {host.home}/{ENV_DIR}/bin/python -r {host.home}/requirements.txt",
-            on_line=lambda line: d.log(f"  {name}: {line}") if line.strip() else None,
+            on_line=quiet_packages(lambda line: d.log(f"  {name}: {line}")),
         )
         d.log(f"stage {name}: module files")
         self.stage_site(d, site)

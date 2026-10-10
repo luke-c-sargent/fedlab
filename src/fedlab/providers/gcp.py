@@ -80,7 +80,14 @@ class GcpProvider(Provider):
 
     # ---- Provider API --------------------------------------------------
     def up(self, node: Node) -> None:
-        if self._get(node):
+        existing = self._get(node)
+        if existing:
+            have = existing.machine_type.rsplit("/", 1)[-1]
+            if have != node.machine_type:
+                raise RuntimeError(
+                    f"{node.name} already exists as {have}, but the config says {node.machine_type}. "
+                    "A VM's type is not changed in place: run `fedlab destroy` first."
+                )
             self.start(node)
             return
         self._ensure_firewall(node.role)

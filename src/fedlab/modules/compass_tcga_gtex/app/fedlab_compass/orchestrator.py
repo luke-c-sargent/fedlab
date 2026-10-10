@@ -6,20 +6,21 @@ This mirrors `Strategy.start()` in Flower but can stop early, and it keeps the l
 
 from __future__ import annotations
 
-import logging
 import time
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+from logging import INFO
+
 from flwr.app import ArrayRecord, ConfigRecord, Message, MetricRecord, RecordDict
+from flwr.common.logger import log
 from flwr.serverapp import Grid
 from flwr.serverapp.strategy import FedAvg
 
 from .contract import SITES, RoundRecord, ServerBackend
 from .logic import EarlyStopper
 
-log = logging.getLogger("fedlab_compass")
 WEIGHT_KEY = "num-examples"
 
 
@@ -82,6 +83,7 @@ def run_federation(
 
     for server_round in range(1, rounds + 1):
         started = time.perf_counter()
+        log(INFO, "round %d/%d: training on both clients", server_round, rounds)
         train_replies = list(
             grid.send_and_receive(
                 strategy.configure_train(server_round, arrays, ConfigRecord(backend.fit_config(server_round)), grid),
@@ -115,10 +117,10 @@ def run_federation(
         )
         history.append(record)
         stop = stopper.update(server_round, validation.loss, arrays.to_numpy_ndarrays(), validation.summary)
-        log.info("round %d: train=%.6f validation=%.6f best=%.6f (round %d)", server_round, train_loss,
-                 validation.loss, stopper.best.loss, stopper.best.round)
+        log(INFO, "round %d/%d done in %.0fs: train=%.6f validation=%.6f best=%.6f (round %d)", server_round, rounds,
+            record.extra["wall_seconds"], train_loss, validation.loss, stopper.best.loss, stopper.best.round)
         if stop:
-            log.info("early stopping after %d rounds without improvement", stopper.patience)
+            log(INFO, "early stopping after %d rounds without improvement", stopper.patience)
             break
 
     if stopper.best is None:

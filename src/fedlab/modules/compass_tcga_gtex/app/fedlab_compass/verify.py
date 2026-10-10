@@ -1,7 +1,6 @@
 """Deploy-time check, run once on each node: the prepared data matches the federated manifest.
 
-This replaces the per-message hash checks of the original scripts (hashing a ~1 GB array every
-round would dominate each round's cost).
+It runs once, not per message: hashing a ~1 GB array every round would dominate the round time.
 """
 
 from __future__ import annotations

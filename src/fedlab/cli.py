@@ -1,4 +1,4 @@
-"""fedlab CLI: check / ping / up / deploy / run / collect / experiment / status / start / stop / ssh / destroy."""
+"""fedlab CLI: provision VMs, run a federated-learning module on them, collect results, tear down."""
 
 from __future__ import annotations
 
@@ -20,10 +20,31 @@ from . import ssh as sshmod
 from .config import Node, Settings, load_settings
 from .modules import REGISTRY, Deployment, FLModule, Site, get_module, module_class
 from .providers import NodeInfo, Provider, get_provider
+from .flower.federation import FederationError
 from .readiness import wait_ready
-from .remote import SshHost
+from .remote import RemoteError, SshHost
 
-app = typer.Typer(no_args_is_help=True, help="Launch and tear down multi-cloud VMs for Flower tests.")
+class FedlabTyper(typer.Typer):
+    """Typer app that prints expected operational failures as one short message instead of a traceback.
+
+    Set FEDLAB_DEBUG=1 to see the full traceback.
+    """
+
+    def __call__(self, *args, **kwargs):
+        try:
+            return super().__call__(*args, **kwargs)
+        except (RemoteError, FederationError, TimeoutError, RuntimeError) as e:
+            if os.environ.get("FEDLAB_DEBUG"):
+                raise
+            console.print(f"[red]error:[/] {escape(str(e))}")
+            console.print("[dim]Set FEDLAB_DEBUG=1 for the full traceback.[/]")
+            raise SystemExit(1)
+
+
+app = FedlabTyper(
+    no_args_is_help=True, pretty_exceptions_enable=False,
+    help="Launch and tear down multi-cloud VMs for Flower tests.",
+)
 console = Console()
 ConfigOpt = typer.Option(None, "--config", "-c", help="Path to config YAML (default: ./config.yaml)")
 NodeOpt = typer.Option(None, "--node", "-n", help="Limit to these node names (repeatable)")
@@ -231,8 +252,8 @@ def ssh_cmd(
     if not info.public_ip:
         raise typer.BadParameter(f"{node} has no public IP (state: {info.state})")
     cmd = [
-        "ssh", "-i", str(ctx.key.private_path), "-o", "IdentitiesOnly=yes",
-        "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR",
+        "ssh", "-i", str(ctx.key.private_path),
+        "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR",
         f"{ctx.cfg.ssh_user}@{info.public_ip}", *(command or []),
     ]
     os.execvp("ssh", cmd)
@@ -274,7 +295,7 @@ def _destroy(ctx: Ctx, yes: bool = False, dry_run: bool = False) -> None:
         for line in leftovers:
             console.print(f"  {escape(line)}")
         raise typer.Exit(1)
-    console.print(f"[green]Destroyed in {took}s; nothing tagged for '{ctx.cfg.run_name}' remains.[/] (The local keypair in .fedlab/ was kept.)")
+    console.print(f"[green]Destroyed in {took}s; nothing tagged for '{ctx.cfg.run_name}' remains.[/]")
 
 
 @app.command()
@@ -284,7 +305,7 @@ def destroy(
     dry_run: bool = typer.Option(False, "--dry-run", help="List what would be deleted"),
 ):
     """Delete ALL resources tagged for this run (instances, disks, firewalls, keys)."""
-    _destroy(Ctx(config), yes, dry_run)  # always the whole fleet
+    _destroy(Ctx(config), yes, dry_run)
 
 
 # ---- federated-learning modules ---------------------------------------------------

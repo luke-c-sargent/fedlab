@@ -93,3 +93,17 @@ def test_await_logs_while_an_operation_is_slow(monkeypatch):
     messages = []
     GcpProvider._await(Slow(), "deleting instance vm1", messages.append, "[gcp z]", beat=15)
     assert len(messages) == 2 and "still deleting instance vm1" in messages[0]
+
+
+def test_up_refuses_to_reuse_a_vm_of_a_different_type(cfg):
+    import dataclasses
+
+    import pytest
+
+    prov = _prov(cfg)
+    node = dataclasses.replace(cfg.resolved_nodes()[2], machine_type="g2-standard-4")
+    existing = MagicMock(machine_type="https://www.googleapis.com/compute/v1/projects/p/zones/z/machineTypes/n1-highmem-8")
+    with patch.object(gcpmod.compute_v1, "InstancesClient") as ic:
+        ic.return_value.get.return_value = existing
+        with pytest.raises(RuntimeError, match=r"already exists as n1-highmem-8.*g2-standard-4.*fedlab destroy"):
+            prov.up(node)

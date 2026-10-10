@@ -12,7 +12,7 @@ packages:
   - build-essential
   - rsync
 write_files:
-  # A stalled mirror connection once left `apt-get` hanging for 25 minutes: give up on it and retry.
+  # A stalled mirror connection can hang `apt-get` for tens of minutes: time out and retry.
   - path: /etc/apt/apt.conf.d/99fedlab
     content: |
       Acquire::http::Timeout "30";
@@ -35,7 +35,7 @@ NVIDIA_SCRIPT_FILE = r"""  - path: /usr/local/sbin/fedlab-gpu-driver.sh
     content: |
       #!/bin/bash
       # The regional GCE mirror serves large uncached packages at ~100 KB/s (the NVIDIA driver is ~220 MB);
-      # the main archive is ~150x faster. The pattern matches nothing on AWS.
+      # the main archive is ~150x faster.
       sed -i 's|http://[a-z0-9-]*\.gce\.archive\.ubuntu\.com/ubuntu|http://archive.ubuntu.com/ubuntu|g' \
         /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources 2>/dev/null
       apt-get update -qq

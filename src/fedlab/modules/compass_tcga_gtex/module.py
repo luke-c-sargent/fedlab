@@ -20,7 +20,7 @@ CODE_DIR, SOURCE_DIR, SITE_DIR = "compass_code", "compass_src", "site"  # on eve
 SITES = ("tcga", "gtex")
 DEFAULTS = {
     "backend": "compass", "seed": 42, "rounds": 100, "local_epochs": 1, "patience": 10,
-    "micro_batch_size": 64, "num_workers": 0, "cpu_threads": 8, "device": "cuda",
+    "micro_batch_size": 16, "num_workers": 0, "cpu_threads": 8, "device": "cuda",
 }
 
 

@@ -167,3 +167,14 @@ def test_security_group_retries_are_logged(monkeypatch):
     monkeypatch.setattr("fedlab.providers.aws.time.sleep", lambda s: None)
     AwsProvider._delete_sg(Busy(), "sg-1", messages.append, "[aws x]")
     assert len(messages) == 2 and "still in use" in messages[0]
+
+
+def test_up_refuses_to_reuse_a_vm_of_a_different_type(aws, cfg):
+    import dataclasses
+
+    node = _node(cfg)
+    aws.up(node)
+    changed = dataclasses.replace(node, machine_type="m5.2xlarge")
+    with pytest.raises(RuntimeError, match=r"already exists as r6i.large.*m5.2xlarge.*fedlab destroy"):
+        aws.up(changed)
+    aws.up(node)  # the unchanged config still just restarts it

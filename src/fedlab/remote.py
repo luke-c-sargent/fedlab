@@ -11,17 +11,27 @@ import shlex
 import signal
 import subprocess
 import sys
+import time
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Callable
 
-from .ssh import Keypair
+from .ssh import SSH_BASE_OPTS, Keypair
 
-SSH_OPTS = [
-    "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no",
-    "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR",
-    "-o", "ServerAliveInterval=30", "-o", "ConnectTimeout=15",
-]
+SSH_OPTS = [*SSH_BASE_OPTS, "-o", "ServerAliveInterval=30", "-o", "ConnectTimeout=15"]
+
+
+# ssh errors from before the remote command starts. Nothing ran on the node, so a retry is safe.
+# (Errors from a session that already started, such as "Broken pipe", are deliberately not listed.)
+TRANSIENT_SSH = (
+    "timed out during banner exchange", "Connection timed out", "Connection refused",
+    "kex_exchange_identification", "Connection reset by", "Connection closed by",
+)
+SSH_ATTEMPTS = 4
+
+
+def is_transient_ssh_failure(returncode: int, output: str) -> bool:
+    return returncode in (255, 12, 23) and any(pattern in output for pattern in TRANSIENT_SSH)
 
 
 class RemoteError(RuntimeError):
@@ -121,6 +131,15 @@ class SshHost(Host):
         return ["ssh", "-i", str(self.key.private_path), *SSH_OPTS, self._target]
 
     def _exec(self, script: str, on_line: Callable[[str], None] | None) -> tuple[int, str]:
+        """Run a script, retrying with backoff when the SSH connection itself could not be made."""
+        for attempt in range(1, SSH_ATTEMPTS + 1):
+            code, output = self._exec_once(script, on_line)
+            if attempt == SSH_ATTEMPTS or not is_transient_ssh_failure(code, output):
+                return code, output
+            time.sleep(2**attempt)
+        raise AssertionError("unreachable")
+
+    def _exec_once(self, script: str, on_line: Callable[[str], None] | None) -> tuple[int, str]:
         proc = subprocess.Popen(
             [*self._ssh, "bash", "-s"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT, text=True,
@@ -136,10 +155,15 @@ class SshHost(Host):
         return proc.wait(), "".join(lines)
 
     def _rsync(self, src: str, dst: str) -> None:
-        ssh = "ssh -i {} {}".format(shlex.quote(str(self.key.private_path)), " ".join(SSH_OPTS))
-        r = subprocess.run(["rsync", "-az", "-e", ssh, src, dst], capture_output=True, text=True)
-        if r.returncode:
-            raise RemoteError(self.name, f"rsync {src} {dst}", r.returncode, r.stdout + r.stderr)
+        ssh = "ssh -i {} {}".format(shlex.quote(str(self.key.private_path)), " ".join(shlex.quote(o) for o in SSH_OPTS))
+        for attempt in range(1, SSH_ATTEMPTS + 1):
+            r = subprocess.run(["rsync", "-az", "-e", ssh, src, dst], capture_output=True, text=True)
+            output = r.stdout + r.stderr
+            if not r.returncode:
+                return
+            if attempt == SSH_ATTEMPTS or not is_transient_ssh_failure(r.returncode, output):
+                raise RemoteError(self.name, f"rsync {src} {dst}", r.returncode, output)
+            time.sleep(2**attempt)
 
     def put(self, local: Path, remote: str) -> None:
         remote = self.abspath(remote)

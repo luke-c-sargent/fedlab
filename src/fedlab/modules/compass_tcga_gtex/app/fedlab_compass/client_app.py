@@ -1,7 +1,7 @@
-"""ClientApp: each message runs in a fresh process, so optimizer state must be stored between rounds.
+"""ClientApp: each message runs in a fresh process, so optimizer state is stored between rounds.
 
-State goes to `$FEDLAB_STATE_DIR` on the node when that is set. `context.state` also works, but the
-SuperNode passes it over a gRPC channel limited to 4 MiB, and COMPASS's Adam state is about 8 MiB.
+State goes to `$FEDLAB_STATE_DIR` on the node when that is set, else to `context.state`. The
+SuperNode passes `context.state` over a gRPC channel limited to 4 MiB; COMPASS's Adam state is about 8 MiB.
 """
 
 import os

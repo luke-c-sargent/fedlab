@@ -30,6 +30,21 @@ class EarlyStopper:
         return self.stale >= self.patience
 
 
+def is_cuda_oom(error: BaseException) -> bool:
+    return type(error).__name__ == "OutOfMemoryError" or "CUDA out of memory" in str(error)
+
+
+def oom_advice(micro_batch: int, effective_batch: int) -> str:
+    """What to do about a CUDA out-of-memory error: gradient accumulation keeps the effective batch fixed."""
+    smaller = [m for m in (32, 16, 8, 4) if m < micro_batch and effective_batch % m == 0]
+    return (
+        f"CUDA ran out of memory with micro_batch_size={micro_batch}. Lower module_options.micro_batch_size "
+        f"(try {smaller[0] if smaller else 'a smaller divisor'}; it must divide {effective_batch}). "
+        f"The effective batch size stays {effective_batch}, because gradients are accumulated over "
+        f"{effective_batch}/micro_batch_size micro-batches."
+    )
+
+
 def _to_numpy(value: Any) -> np.ndarray:
     if hasattr(value, "detach"):  # torch tensor
         value = value.detach().cpu().numpy()

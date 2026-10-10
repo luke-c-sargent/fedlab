@@ -10,7 +10,9 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable
 
@@ -38,6 +40,27 @@ def toml_value(value: object) -> str:
 
 def toml_pairs(values: dict) -> str:
     return " ".join(f"{k}={toml_value(v)}" for k, v in values.items())
+
+
+@contextmanager
+def heartbeat(emit: Callable[[str], None] | None, message: str, every: float = 60.0):
+    """While the block runs, call `emit("<message> (<elapsed>)")` every `every` seconds."""
+    done = threading.Event()
+    started = time.monotonic()
+
+    def beat() -> None:
+        while not done.wait(every):
+            elapsed = int(time.monotonic() - started)
+            if emit:
+                emit(f"{message} ({elapsed // 60}m{elapsed % 60:02d}s)")
+
+    thread = threading.Thread(target=beat, daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        done.set()
+        thread.join(timeout=1)
 
 
 class FederationError(RuntimeError):
@@ -136,7 +159,8 @@ class Federation:
     # ---- flwr CLI on the server -------------------------------------------------
     def _flwr(self, args: str, check: bool = True, on_line: Callable[[str], None] | None = None) -> tuple[int, str]:
         sh = self.d.server.host
-        code, out = sh.execute(f"flwr {args} 2>&1", env=self.env(sh), on_line=on_line)
+        # Unbuffered: through an SSH pipe Python would otherwise hold lines back in an 8 KiB block.
+        code, out = sh.execute(f"flwr {args} 2>&1", env={**self.env(sh), "PYTHONUNBUFFERED": "1"}, on_line=on_line)
         out = ANSI.sub("", out)
         if check and code != 0:
             raise FederationError(f"`flwr {args}` failed ({code}):\n{out[-2000:]}")
@@ -160,7 +184,8 @@ class Federation:
         """Run a Flower app (a directory on the server) to completion. Returns the run id."""
         sh = self.d.server.host
         cfg = f" --run-config {_quote(toml_pairs(run_config))}" if run_config else ""
-        code, out = self._flwr(f"run {app_dir} {CONNECTION} --stream{cfg}", on_line=on_line)
+        with heartbeat(on_line, "run still in progress"):
+            code, out = self._flwr(f"run {app_dir} {CONNECTION} --stream{cfg}", on_line=on_line)
         match = re.search(r"started run (\d+)", out)
         if not match:
             raise FederationError(f"could not find a run id in `flwr run` output:\n{out[-2000:]}")

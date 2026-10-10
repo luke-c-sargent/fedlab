@@ -1,6 +1,5 @@
 """ServerApp: runs the federation loop and writes results to $FEDLAB_OUTPUT_DIR/run-<id>/."""
 
-import logging
 import os
 from pathlib import Path
 
@@ -15,7 +14,6 @@ app = ServerApp()
 
 @app.main()
 def main(grid: Grid, context: Context) -> None:
-    logging.getLogger("fedlab_compass").setLevel(logging.INFO)
     cfg = context.run_config
     out_dir = Path(os.environ.get("FEDLAB_OUTPUT_DIR", "results")) / f"run-{context.run_id}"
     run_federation(

@@ -22,7 +22,7 @@ class NodeSpec(BaseModel):
     site: str | None = None  # data site a client holds, e.g. "tcga"; interpreted by the module
     machine_type: str | None = None
     disk_gb: int | None = None
-    gpu: bool = False  # AWS: use the NVIDIA-driver AMI. GCP: install the driver on first boot.
+    gpu: bool = False
     accelerator: str | None = None  # GCP only: GPU to attach to an N1 machine, e.g. nvidia-tesla-t4
 
 
@@ -43,12 +43,10 @@ class Node:
 
 def _default_nodes() -> list[NodeSpec]:
     return [
-        # server: 2 vCPU / 16 GB
         NodeSpec(role="server", provider="aws", location="eu-west-1", machine_type="r6i.large"),
-        # GPU clients: T4, 52-64 GB RAM
-        NodeSpec(role="client", site="tcga", provider="aws", location="us-east-1", machine_type="g4dn.4xlarge", gpu=True),  # 16 vCPU / 64 GB, T4
+        NodeSpec(role="client", site="tcga", provider="aws", location="us-east-1", machine_type="g4dn.4xlarge", gpu=True),
         NodeSpec(
-            role="client", site="gtex", provider="gcp", location="us-central1-a", machine_type="n1-highmem-8",  # 8 vCPU / 52 GB
+            role="client", site="gtex", provider="gcp", location="us-central1-a", machine_type="n1-highmem-8",
             gpu=True, accelerator="nvidia-tesla-t4",
         ),
     ]
@@ -64,7 +62,7 @@ class Settings(BaseSettings):
     aws_machine_type: str = "m5.xlarge"
     gcp_machine_type: str = "n2-standard-4"
     disk_gb: int = 200
-    ports: list[int] = [22, 9092]  # opened on the server only (9092 = Flower Fleet API)
+    ports: list[int] = [22, 9092]
     warn_after_days: float = 3
     ssh_user: str = "ubuntu"
     gcp_project: str | None = Field(
