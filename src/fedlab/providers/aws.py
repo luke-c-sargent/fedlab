@@ -109,7 +109,7 @@ class AwsProvider(Provider):
                 raise
 
     # ---- Provider API --------------------------------------------------
-    def up(self, node: Node) -> None:
+    def up(self, node: Node, log: Callable[[str], None] | None = None) -> None:
         ec2 = self._ec2(node.location)
         existing = self._find(ec2, node)
         if existing:

@@ -207,7 +207,7 @@ def ping(config: Optional[Path] = ConfigOpt, node: Optional[list[str]] = NodeOpt
 
 
 def _up(ctx: Ctx) -> None:
-    errors = _run_parallel(ctx, "up", lambda n: ctx.for_node(n).up(n))
+    errors = _run_parallel(ctx, "up", lambda n: ctx.for_node(n).up(n, log=lambda m: console.print(f"[yellow]{escape(m)}[/]")))
     _finish(ctx, errors, wait_ssh=True)
 
 

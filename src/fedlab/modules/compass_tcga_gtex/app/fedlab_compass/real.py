@@ -20,7 +20,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .contract import SITES, BestModel, ClientBackend, FitResult, OptimizerState, RoundRecord, ServerBackend, Validation
+from .contract import DATA_BINDING, SITES, BestModel, ClientBackend, FitResult, OptimizerState, RoundRecord, ServerBackend, Validation
 from .logic import is_cuda_oom, oom_advice, pack_optimizer_state, unpack_optimizer_state
 
 CODE_ENV = "FEDLAB_COMPASS_CODE"  # dir holding centralized_test/ and federated_test/
@@ -131,6 +131,7 @@ class RealClient(ClientBackend):
             local_epochs=env.local_epochs,
         )
         self.local_sampling = env.federated["flower"].get("local_sampling", "context_balanced")
+        self.manifest_sha256 = env.central.sha256_file(env.site_root / "federated_manifest.json")  # reported in every reply
         self._model = None
 
     # ---- lazily built pieces (a train message never needs validation data, and vice versa) ------
@@ -231,6 +232,7 @@ class RealClient(ClientBackend):
         metrics = {
             "site": self.site,
             "client_id": self.client_id,
+            DATA_BINDING: self.manifest_sha256,
             "train_loss": float(np.mean(losses)),
             "anchors_processed": self.anchor_budget * local_epochs,
             "update_l2_norm": l2,
@@ -257,6 +259,7 @@ class RealClient(ClientBackend):
         return {
             "site": self.site,
             "client_id": self.client_id,
+            DATA_BINDING: self.manifest_sha256,
             "checkpoint_selection_metric": fc.CHECKPOINT_SELECTION_METRIC,
             "validation_loss": loss,
             fc.VALIDATION_CONTEXT_MACRO_FIELD: loss,
@@ -282,6 +285,9 @@ class RealServer(ServerBackend):
 
     def initial_arrays(self):
         return self.env.fc.get_foundation_arrays(self.model)
+
+    def expected_data_binding(self) -> str:
+        return self.env.central.sha256_file(self.env.site_root / "federated_manifest.json")
 
     def fit_config(self, server_round: int) -> dict:
         return {"server_round": server_round, "local_epochs": self.local_epochs}

@@ -74,17 +74,24 @@ class FlowerModule(FLModule):
         d.server.host.put(self.app_path, f"{d.server.host.home}/{APP_DIR}")
 
     def _stage_site(self, d: Deployment, site: Site) -> None:
+        self.install_environment(d, site, self.requirements)
+        d.log(f"stage {site.node.name}: module files")
+        self.stage_site(d, site)
+
+    def install_environment(self, d: Deployment, site: Site, requirements: Path | str) -> None:
+        """Create the node's virtualenv (~/fl) and install `requirements` (a local file, or the text itself)."""
         host, name = site.host, site.node.name
         d.log(f"stage {name}: python environment")
-        host.put(self.requirements, f"{host.home}/requirements.txt")
+        if isinstance(requirements, Path):
+            host.put(requirements, f"{host.home}/requirements.txt")
+        else:
+            host.put_text(requirements, f"{host.home}/requirements.txt")
         host.run(
             "command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 sh\n"
             f"test -x {host.home}/{ENV_DIR}/bin/python || uv venv --python {PYTHON_VERSION} {host.home}/{ENV_DIR}\n"
             f"uv pip install --python {host.home}/{ENV_DIR}/bin/python -r {host.home}/requirements.txt",
             on_line=quiet_packages(lambda line: d.log(f"  {name}: {line}")),
         )
-        d.log(f"stage {name}: module files")
-        self.stage_site(d, site)
 
     def start(self, d: Deployment) -> None:
         Federation(d, ENV_DIR).start(self.node_config, lambda site: self.service_env(d, site))

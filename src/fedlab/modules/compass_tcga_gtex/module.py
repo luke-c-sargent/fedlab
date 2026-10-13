@@ -141,20 +141,28 @@ class CompassTcgaGtexModule(FlowerModule):
         return env
 
     # ---- staging ------------------------------------------------------------------------------------
-    def stage_site(self, d: Deployment, site: Site) -> None:
-        if self.stub:
-            return
+    def stage_code(self, d: Deployment, site: Site, compass_source: bool = True) -> None:
+        """The training code (the user's checkout) and, unless `compass_source` is false, the pinned COMPASS source."""
         host, name = site.host, site.node.name
         home = host.home
         d.log(f"stage {name}: code")
         for sub in ("centralized_test", "federated_test"):
             host.put(self.train_root / sub, f"{home}/{CODE_DIR}/{sub}")
+        if not compass_source:
+            return
         src = f"{home}/{SOURCE_DIR}"
         host.run(  # the pinned commit only (the full history is ~800 MB); fall back to a full fetch
             f"test -d {src}/.git || {{ git init -q {src} && git -C {src} remote add origin {COMPASS_URL}; }}\n"
             f"git -C {src} fetch -q --depth 1 origin {COMPASS_COMMIT} || git -C {src} fetch -q origin\n"
             f"git -C {src} checkout -q --detach {COMPASS_COMMIT}"
         )
+
+    def stage_site(self, d: Deployment, site: Site) -> None:
+        if self.stub:
+            return
+        host, name = site.host, site.node.name
+        home = host.home
+        self.stage_code(d, site)
         d.log(f"stage {name}: prepared data")
         root = f"{home}/{SITE_DIR}"
         for file in ("federated_manifest.json", "global_scaler.npz", "gene_order.txt"):

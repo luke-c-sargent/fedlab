@@ -1,0 +1,26 @@
+# The file-based COMPASS run on your GPU fleet, with your real data. Copied from config.yaml, with:
+#   - the module changed to compass_tcga_gtex_async (the sites prepare their own data, so no `fedlab prepare`)
+#   - ports: [22]  (no Flower server, so nothing but SSH is open)
+#   - its own run_name and state_dir, so `fedlab destroy -c config.async.yaml` can only touch these resources
+# Run:  uv run fedlab check -c config.async.yaml
+#       uv run fedlab experiment -c config.async.yaml --yes --destroy-on-failure
+run_name: fedasync-gpu
+name_prefix: fedasync
+state_dir: .fedlab/async-gpu
+disk_gb: 200
+ports: [22]
+warn_after_days: 3
+
+nodes:
+  - {role: server, provider: aws, location: eu-west-1, machine_type: r6i.large}                  # 2 vCPU / 16 GB
+  - {role: client, site: tcga, provider: aws, location: us-west-2, machine_type: g5.xlarge, gpu: true}  # 4 vCPU / 16 GB, A10G
+  - {role: client, site: gtex, provider: gcp, location: us-central1-a, fallback_locations: [us-central1-b, us-central1-c], machine_type: g2-standard-4, gpu: true}  # 4 vCPU / 16 GB, L4; a-zone had no L4s on 2026-10-12
+
+module: compass_tcga_gtex_async
+module_options:
+  compass_repo: ~/code/federated-learning-model
+  tcga_tsv: ~/data/tcga_compass_tpm.tsv            # uploaded to the tcga site; the site prepares its own data from it
+  gtex_tsv: ~/data/gtex_compass_tpm.tsv
+  rounds: 2
+  micro_batch_size: 32
+  backend: compass

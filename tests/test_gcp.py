@@ -107,3 +107,147 @@ def test_up_refuses_to_reuse_a_vm_of_a_different_type(cfg):
         ic.return_value.get.return_value = existing
         with pytest.raises(RuntimeError, match=r"already exists as n1-highmem-8.*g2-standard-4.*fedlab destroy"):
             prov.up(node)
+
+
+# ---- zone fallback: a node may name more zones to try when the first has no capacity --------------------------
+
+import dataclasses  # noqa: E402
+
+import pytest  # noqa: E402
+from google.api_core.exceptions import Forbidden, ServiceUnavailable  # noqa: E402
+
+STOCKOUT = "503 SERVICE UNAVAILABLE ZONE_RESOURCE_POOL_EXHAUSTED_WITH_DETAILS: The zone does not have enough resources"
+ZONES = ("us-central1-a", "us-central1-b", "us-central1-c")
+
+
+def _node(cfg):
+    return dataclasses.replace(cfg.resolved_nodes()[2], fallback_locations=ZONES[1:])
+
+
+def _created_in(ic):
+    return [c.kwargs["zone"] for c in ic.return_value.insert.call_args_list]
+
+
+def test_a_stockout_moves_on_to_the_next_zone_and_builds_the_node_for_that_zone(cfg):
+    prov, node, messages = _prov(cfg), _node(cfg), []
+    with patch.object(gcpmod.compute_v1, "InstancesClient") as ic, patch.object(gcpmod.compute_v1, "FirewallsClient") as fc:
+        ic.return_value.get.side_effect = NotFound("x")
+        fc.return_value.get.side_effect = NotFound("x")
+        ic.return_value.insert.return_value.result.side_effect = [ServiceUnavailable(STOCKOUT), None]
+        prov.up(node, log=messages.append)
+    assert _created_in(ic) == ["us-central1-a", "us-central1-b"]
+    inst = ic.return_value.insert.call_args.kwargs["instance_resource"]  # the second attempt, built for zone b
+    assert "zones/us-central1-b/machineTypes/" in inst.machine_type
+    assert inst.guest_accelerators[0].accelerator_type.startswith("zones/us-central1-b/acceleratorTypes/")
+    assert "zones/us-central1-b/diskTypes/" in inst.disks[0].initialize_params.disk_type
+    assert inst.name == node.name  # the name keeps its primary zone: it identifies the node, not where it landed
+    assert messages == [
+        f"{node.name}: no capacity for n1-highmem-8 in us-central1-a; trying us-central1-b",
+        f"{node.name}: created in us-central1-b (no capacity in us-central1-a)",
+    ]
+    assert fc.return_value.insert.call_count == 1  # the firewall is created once, not per attempt
+
+
+def test_when_every_zone_is_out_the_error_names_them_all(cfg):
+    prov, node = _prov(cfg), _node(cfg)
+    with patch.object(gcpmod.compute_v1, "InstancesClient") as ic, patch.object(gcpmod.compute_v1, "FirewallsClient") as fc:
+        ic.return_value.get.side_effect = NotFound("x")
+        fc.return_value.get.side_effect = NotFound("x")
+        ic.return_value.insert.return_value.result.side_effect = ServiceUnavailable(STOCKOUT)
+        with pytest.raises(RuntimeError, match=r"no capacity for n1-highmem-8 in any of \['us-central1-a', 'us-central1-b', 'us-central1-c'\]"):
+            prov.up(node)
+    assert _created_in(ic) == list(ZONES)
+
+
+def test_other_errors_do_not_fall_back(cfg):
+    prov, node = _prov(cfg), _node(cfg)
+    with patch.object(gcpmod.compute_v1, "InstancesClient") as ic, patch.object(gcpmod.compute_v1, "FirewallsClient") as fc:
+        ic.return_value.get.side_effect = NotFound("x")
+        fc.return_value.get.side_effect = NotFound("x")
+        ic.return_value.insert.return_value.result.side_effect = Forbidden("Quota 'NVIDIA_T4_GPUS' exceeded")
+        with pytest.raises(Forbidden):
+            prov.up(node)
+    assert _created_in(ic) == ["us-central1-a"]  # a quota problem would follow the node to every zone
+
+
+def test_without_fallback_zones_a_stockout_is_still_a_clear_error(cfg):
+    prov, node = _prov(cfg), cfg.resolved_nodes()[2]
+    with patch.object(gcpmod.compute_v1, "InstancesClient") as ic, patch.object(gcpmod.compute_v1, "FirewallsClient") as fc:
+        ic.return_value.get.side_effect = NotFound("x")
+        fc.return_value.get.side_effect = NotFound("x")
+        ic.return_value.insert.return_value.result.side_effect = ServiceUnavailable(STOCKOUT)
+        with pytest.raises(RuntimeError, match=r"in any of \['us-central1-a'\].*fallback_locations"):
+            prov.up(node)
+
+
+def _only_in(zone, status="RUNNING"):
+    """An InstancesClient().get that finds the VM in `zone` only."""
+    inst = MagicMock(status=status, network_interfaces=[], machine_type="zones/z/machineTypes/n1-highmem-8",
+                     last_start_timestamp="2026-10-12T12:00:00+00:00")
+
+    def get(project, zone, instance):  # noqa: ANN001
+        if zone == _only_in.target:
+            return inst
+        raise NotFound("x")
+
+    _only_in.target = zone
+    return get
+
+
+def test_describe_finds_a_vm_in_a_fallback_zone_and_reports_where_it_is(cfg):
+    prov, node = _prov(cfg), _node(cfg)
+    with patch.object(gcpmod.compute_v1, "InstancesClient") as ic:
+        ic.return_value.get.side_effect = _only_in("us-central1-c")
+        info = prov.describe(node)
+    assert info.state == "running" and info.location == "us-central1-c"
+    assert [c.kwargs["zone"] for c in ic.return_value.get.call_args_list] == list(ZONES)
+
+
+def test_up_reuses_a_vm_that_landed_in_a_fallback_zone(cfg):
+    prov, node = _prov(cfg), _node(cfg)
+    with patch.object(gcpmod.compute_v1, "InstancesClient") as ic:
+        ic.return_value.get.side_effect = _only_in("us-central1-b")
+        prov.up(node)
+    ic.return_value.insert.assert_not_called()
+
+
+def test_start_and_stop_act_in_the_zone_the_vm_is_in(cfg):
+    prov, node = _prov(cfg), _node(cfg)
+    with patch.object(gcpmod.compute_v1, "InstancesClient") as ic:
+        ic.return_value.get.side_effect = _only_in("us-central1-b", status="TERMINATED")
+        prov.start(node)
+        assert ic.return_value.start.call_args.kwargs["zone"] == "us-central1-b"
+        ic.return_value.get.side_effect = _only_in("us-central1-c", status="RUNNING")
+        prov.stop(node)
+        assert ic.return_value.stop.call_args.kwargs["zone"] == "us-central1-c"
+
+
+def test_destroy_looks_in_every_candidate_zone(cfg):
+    prov, node = _prov(cfg), _node(cfg)
+    stray = MagicMock()
+    stray.name = "fedlearn-client-gcp-us-central1-a"
+    with patch.object(gcpmod.compute_v1, "InstancesClient") as ic, patch.object(gcpmod.compute_v1, "DisksClient") as dc, patch.object(
+        gcpmod.compute_v1, "FirewallsClient"
+    ) as fc:
+        ic.return_value.list.side_effect = lambda request: [stray] if request.zone == "us-central1-c" else []
+        dc.return_value.list.return_value = []
+        fc.return_value.get.side_effect = NotFound("x")
+        actions = prov.destroy([node], dry_run=True)
+    assert sorted(c.kwargs["request"].zone for c in ic.return_value.list.call_args_list) == list(ZONES)
+    assert actions == ["[gcp us-central1-c] delete instance fedlearn-client-gcp-us-central1-a"]  # found where it landed
+
+
+def test_check_verifies_every_candidate_zone(cfg):
+    prov, node = _prov(cfg), _node(cfg)
+    quota = MagicMock(metric="NVIDIA_T4_GPUS", limit=4, usage=0)
+    with patch("google.auth.default", return_value=(None, "proj")), patch.object(gcpmod.compute_v1, "FirewallsClient"), patch.object(
+        gcpmod.compute_v1, "ImagesClient"
+    ), patch.object(gcpmod.compute_v1, "InstancesClient"), patch.object(gcpmod.compute_v1, "AcceleratorTypesClient"), patch.object(
+        gcpmod.compute_v1, "RegionsClient"
+    ) as rc, patch.object(gcpmod.compute_v1, "MachineTypesClient") as mc:
+        rc.return_value.get.return_value.quotas = [quota]
+        results = prov.check([node])
+    assert all(r.ok for r in results)
+    assert [c.kwargs["zone"] for c in mc.return_value.get.call_args_list] == list(ZONES)
+    assert {r.name.split(":")[0] for r in results if "machine type" in r.name} == {f"gcp {z}" for z in ZONES}
+    assert sum("list instances" in r.name for r in results) == 3  # the permission check still runs per zone

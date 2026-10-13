@@ -15,6 +15,7 @@ nodes:
   - {role: client, site: tcga, provider: aws, location: us-east-1, machine_type: g4dn.4xlarge, gpu: true}
   - {role: client, site: gtex, provider: gcp, location: us-central1-a, machine_type: n1-highmem-8, gpu: true, accelerator: nvidia-tesla-t4}
   # Per-node overrides: disk_gb: 500
+  # GCP only: fallback_locations: [us-central1-b, us-central1-c]   zones to try, in order, if `location` has no capacity
 
 # Which federated-learning module to run (`fedlab modules` lists them) and its options.
 module: compass_tcga_gtex

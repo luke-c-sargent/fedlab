@@ -28,13 +28,27 @@ def main() -> None:
 
     fc, central = env.fc, env.central
     client_id = SITES[args.site][0]
-    client_dir = env.site_root / "clients" / args.site
+    try:
+        client = verify_client(
+            fc, env.config_path, env.streams["split"], env.manifest, env.site_root / "clients" / args.site, client_id,
+            env.config["input"]["expected_genes"], central.sha256_file,
+        )
+    except ValueError as error:
+        raise SystemExit(str(error)) from None
+    print(f"{client_id} data verified ({client['samples']} samples)")
+
+
+def verify_client(fc, config_path, split_seed, manifest, client_dir, client_id, expected_genes, sha256_file) -> dict:
+    """The prepared data of one client matches the federated manifest. Raises ValueError if not.
+
+    Used at deploy time by the live setup, and once per federated manifest by clients in a file-based run.
+    """
     client = fc.validate_client_prepared_manifest(
         client_dir, expected_client_id=client_id,
-        expected_config_sha256=central.sha256_file(env.config_path), expected_split_seed=env.streams["split"],
+        expected_config_sha256=sha256_file(config_path), expected_split_seed=split_seed,
     )
-    manifest, contract = env.manifest, env.manifest["clients"][client_id]
-    client_sha = central.sha256_file(client_dir / "manifest.json")
+    contract = manifest["clients"][client_id]
+    client_sha = sha256_file(client_dir / "manifest.json")
     hashes = manifest.get("prepared_artifact_hashes", {})
     if (
         contract.get("client_dataset_id") != client["client_dataset_id"]
@@ -45,10 +59,10 @@ def main() -> None:
         or manifest.get("source_input_sha256", {}).get(client_id) != client["source_sha256"]
         or manifest.get("gene_order_sha256") != client["artifact_hashes"]["gene_order_sha256"]
     ):
-        raise SystemExit(f"federated manifest does not bind the prepared {client_id} data")
-    if client["genes"] != env.config["input"]["expected_genes"]:
-        raise SystemExit("client gene count differs from the COMPASS contract")
-    print(f"{client_id} data verified ({client['samples']} samples)")
+        raise ValueError(f"federated manifest does not bind the prepared {client_id} data")
+    if client["genes"] != expected_genes:
+        raise ValueError("client gene count differs from the COMPASS contract")
+    return client
 
 
 if __name__ == "__main__":

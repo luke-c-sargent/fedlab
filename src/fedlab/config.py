@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from dotenv import load_dotenv
-from pydantic import AliasChoices, BaseModel, Field, field_validator
+from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 TAG_KEY = "fedlab-run"
@@ -18,12 +18,22 @@ _SLUG = re.compile(r"^[a-z][a-z0-9-]{0,30}$")
 class NodeSpec(BaseModel):
     provider: Literal["aws", "gcp"]
     location: str  # AWS region or GCP zone
+    fallback_locations: list[str] = Field(default_factory=list)  # GCP only: zones to try, in order, if `location` has no capacity
     role: Literal["server", "client"] = "client"
     site: str | None = None  # data site a client holds, e.g. "tcga"; interpreted by the module
     machine_type: str | None = None
     disk_gb: int | None = None
     gpu: bool = False
     accelerator: str | None = None  # GCP only: GPU to attach to an N1 machine, e.g. nvidia-tesla-t4
+
+    @model_validator(mode="after")
+    def _fallbacks(self):
+        if self.fallback_locations and self.provider != "gcp":
+            raise ValueError("fallback_locations is only supported for GCP nodes (zones); AWS launches in the region you give")
+        zones = [self.location, *self.fallback_locations]
+        if len(set(zones)) != len(zones):
+            raise ValueError(f"location and fallback_locations must all differ: {zones}")
+        return self
 
 
 @dataclass(frozen=True)
@@ -39,6 +49,12 @@ class Node:
     gpu: bool = False
     accelerator: str | None = None
     site: str | None = None
+    fallback_locations: tuple[str, ...] = ()
+
+    @property
+    def zones(self) -> tuple[str, ...]:
+        """Every place this node may live, in the order they are tried."""
+        return (self.location, *self.fallback_locations)
 
 
 def _default_nodes() -> list[NodeSpec]:
@@ -114,6 +130,7 @@ class Settings(BaseSettings):
                     gpu=n.gpu,
                     accelerator=n.accelerator,
                     site=n.site,
+                    fallback_locations=tuple(n.fallback_locations),
                 )
             )
         names = [n.name for n in out]

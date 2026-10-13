@@ -8,6 +8,10 @@ from pathlib import Path
 
 import numpy as np
 
+# The one data-binding field: the hash of the federated dataset manifest a client used. Clients report it in every
+# reply; the server compares it with its own. (The original also sent three dataset ids; they add provenance only.)
+DATA_BINDING = "federated_dataset_manifest_sha256"
+
 # site name (as set in the node config) -> (client id used in metrics, validation contexts the site owns)
 SITES = {"tcga": ("TCGA", list(range(33))), "gtex": ("GTEx", [33])}
 
@@ -71,6 +75,10 @@ class ServerBackend(ABC):
 
     def fit_config(self, server_round: int) -> dict:
         return {"server_round": server_round}
+
+    def expected_data_binding(self) -> str | None:
+        """The hash of the federated dataset manifest every client must report having used, or None for no check."""
+        return None
 
     def aggregate(self, updates: list[tuple[list[np.ndarray], int]]) -> list[np.ndarray] | None:
         """Optionally replace Flower's weighted average. `updates` are (arrays, weight) pairs."""

@@ -11,6 +11,7 @@ if TYPE_CHECKING:
 REGISTRY = {
     "smoke": "fedlab.modules.smoke.module:SmokeModule",
     "compass_tcga_gtex": "fedlab.modules.compass_tcga_gtex.module:CompassTcgaGtexModule",
+    "compass_tcga_gtex_async": "fedlab.modules.compass_tcga_gtex.async_module:CompassAsyncModule",
 }
 
 

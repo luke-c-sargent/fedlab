@@ -127,3 +127,71 @@ def test_oom_advice_names_a_smaller_divisor_and_keeps_the_effective_batch():
     advice = logic.oom_advice(64, 128)
     assert "micro_batch_size=64" in advice and "try 32" in advice and "stays 128" in advice
     assert "try 8" in logic.oom_advice(16, 128) and "try 4" in logic.oom_advice(8, 128)
+
+
+# ---- the data-binding field: every client reports the federated manifest it used; the server compares ----
+
+from fedlab_compass.contract import DATA_BINDING  # noqa: E402
+
+GOOD = "a" * 64
+
+
+class Expecting(stub.StubServer):
+    def expected_data_binding(self):
+        return GOOD
+
+
+def reporting(monkeypatch, by_site):
+    """Clients that add the field (site -> value; None leaves it out), as the real client does."""
+
+    class Reporting(stub.StubClient):
+        def fit(self, arrays, config, optimizer):
+            result = super().fit(arrays, config, optimizer)
+            if by_site[self.site] is not None:
+                result.metrics[DATA_BINDING] = by_site[self.site]
+            return result
+
+        def evaluate(self, arrays, config):
+            metrics = super().evaluate(arrays, config)
+            if by_site[self.site] is not None:
+                metrics[DATA_BINDING] = by_site[self.site]
+            return metrics
+
+    monkeypatch.setattr(client_app, "client_backend", lambda run_config, node_config: Reporting(str(node_config["site"])))
+
+
+def test_clients_that_report_the_expected_manifest_pass(tmp_path, monkeypatch):
+    reporting(monkeypatch, {"tcga": GOOD, "gtex": GOOD})
+    history, _ = orchestrator.run_federation(FakeGrid(), Expecting(), rounds=2, patience=5, out_dir=tmp_path)
+    assert len(history) == 2
+
+
+def test_a_client_on_a_different_manifest_stops_the_round_and_is_named(tmp_path, monkeypatch):
+    reporting(monkeypatch, {"tcga": GOOD, "gtex": "b" * 64})
+    with pytest.raises(RuntimeError, match=r"round 1 train: gtex used a different federated dataset manifest \(bbbbbbbbbbbb"):
+        orchestrator.run_federation(FakeGrid(), Expecting(), rounds=2, patience=5, out_dir=tmp_path)
+
+
+def test_a_client_that_reports_nothing_is_refused(tmp_path, monkeypatch):
+    reporting(monkeypatch, {"tcga": None, "gtex": GOOD})
+    with pytest.raises(RuntimeError, match="tcga did not report which federated dataset manifest it used"):
+        orchestrator.run_federation(FakeGrid(), Expecting(), rounds=2, patience=5, out_dir=tmp_path)
+
+
+def test_evaluate_replies_are_checked_too(tmp_path, monkeypatch):
+    class OnlyTrainReports(stub.StubClient):
+        def fit(self, arrays, config, optimizer):
+            result = super().fit(arrays, config, optimizer)
+            result.metrics[DATA_BINDING] = GOOD
+            return result  # evaluate leaves the field out
+
+    monkeypatch.setattr(client_app, "client_backend", lambda run_config, node_config: OnlyTrainReports(str(node_config["site"])))
+    # neither site reports in evaluate, and sites are checked in sorted order, so gtex is the one named
+    with pytest.raises(RuntimeError, match="round 1 evaluate: gtex did not report"):
+        orchestrator.run_federation(FakeGrid(), Expecting(), rounds=2, patience=5, out_dir=tmp_path)
+
+
+def test_without_an_expectation_nothing_is_checked(tmp_path, monkeypatch):
+    reporting(monkeypatch, {"tcga": "garbage", "gtex": None})  # the stub backend has no manifest
+    history, _ = orchestrator.run_federation(FakeGrid(), stub.StubServer(), rounds=1, patience=5, out_dir=tmp_path)
+    assert len(history) == 1

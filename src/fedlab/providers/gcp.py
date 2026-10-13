@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import concurrent.futures
+import dataclasses
 import time
 from datetime import datetime
 from typing import Callable
 
-from google.api_core.exceptions import NotFound
+from google.api_core.exceptions import GoogleAPICallError, NotFound
 from google.cloud import compute_v1
 
 from .. import cloud_init
@@ -38,16 +39,26 @@ class GcpProvider(Provider):
     def _net_tag(self, role: str) -> str:
         return f"{self.cfg.run_name}-{role}"
 
+    def _find(self, node: Node):
+        """(instance, zone) for the node, looking in its zone and then its fallback zones; (None, location) if absent."""
+        for zone in node.zones:
+            try:
+                return compute_v1.InstancesClient().get(project=self.project, zone=zone, instance=node.name), zone
+            except NotFound:
+                continue
+        return None, node.location
+
     def _get(self, node: Node):
-        try:
-            return compute_v1.InstancesClient().get(
-                project=self.project, zone=node.location, instance=node.name
-            )
-        except NotFound:
-            return None
+        return self._find(node)[0]
 
     @staticmethod
-    def _gpu_args(node: Node) -> dict:
+    def _is_stockout(error: Exception) -> bool:
+        """Google has no capacity for this machine in this zone right now (a different zone may have)."""
+        text = str(error)
+        return isinstance(error, GoogleAPICallError) and ("ZONE_RESOURCE_POOL_EXHAUSTED" in text or "STOCKOUT" in text)
+
+    @staticmethod
+    def _gpu_args(node: Node, zone: str) -> dict:
         """GPU VMs can't live-migrate, so maintenance must terminate them; N1 machines also need a GPU attached."""
         if not (node.gpu or node.accelerator):
             return {}
@@ -55,7 +66,7 @@ class GcpProvider(Provider):
         if node.accelerator:  # G2/A2 machine types have their GPU built in
             args["guest_accelerators"] = [
                 compute_v1.AcceleratorConfig(
-                    accelerator_type=f"zones/{node.location}/acceleratorTypes/{node.accelerator}",
+                    accelerator_type=f"zones/{zone}/acceleratorTypes/{node.accelerator}",
                     accelerator_count=1,
                 )
             ]
@@ -79,22 +90,11 @@ class GcpProvider(Provider):
             fw.insert(project=self.project, firewall_resource=rule).result()
 
     # ---- Provider API --------------------------------------------------
-    def up(self, node: Node) -> None:
-        existing = self._get(node)
-        if existing:
-            have = existing.machine_type.rsplit("/", 1)[-1]
-            if have != node.machine_type:
-                raise RuntimeError(
-                    f"{node.name} already exists as {have}, but the config says {node.machine_type}. "
-                    "A VM's type is not changed in place: run `fedlab destroy` first."
-                )
-            self.start(node)
-            return
-        self._ensure_firewall(node.role)
+    def _instance(self, node: Node, zone: str) -> compute_v1.Instance:
         labels = {TAG_KEY: self.cfg.run_name}
-        inst = compute_v1.Instance(
+        return compute_v1.Instance(
             name=node.name,
-            machine_type=f"zones/{node.location}/machineTypes/{node.machine_type}",
+            machine_type=f"zones/{zone}/machineTypes/{node.machine_type}",
             labels={**labels, "fedlab-role": node.role},
             tags=compute_v1.Tags(items=[self._net_tag(node.role)]),
             disks=[
@@ -104,7 +104,7 @@ class GcpProvider(Provider):
                     initialize_params=compute_v1.AttachedDiskInitializeParams(
                         source_image=IMAGE,
                         disk_size_gb=node.disk_gb,
-                        disk_type=f"zones/{node.location}/diskTypes/pd-balanced",
+                        disk_type=f"zones/{zone}/diskTypes/pd-balanced",
                         labels=labels,
                     ),
                 )
@@ -117,7 +117,7 @@ class GcpProvider(Provider):
                     ],
                 )
             ],
-            **self._gpu_args(node),
+            **self._gpu_args(node, zone),
             metadata=compute_v1.Metadata(
                 items=[
                     compute_v1.Items(
@@ -127,28 +127,56 @@ class GcpProvider(Provider):
                 ]
             ),
         )
-        compute_v1.InstancesClient().insert(
-            project=self.project, zone=node.location, instance_resource=inst
-        ).result()
+
+    def up(self, node: Node, log: Callable[[str], None] | None = None) -> None:
+        log = log or (lambda message: None)
+        existing, zone = self._find(node)
+        if existing:
+            have = existing.machine_type.rsplit("/", 1)[-1]
+            if have != node.machine_type:
+                raise RuntimeError(
+                    f"{node.name} already exists as {have}, but the config says {node.machine_type}. "
+                    "A VM's type is not changed in place: run `fedlab destroy` first."
+                )
+            self.start(node)
+            return
+        self._ensure_firewall(node.role)
+        out_of_capacity: list[str] = []
+        for zone in node.zones:
+            try:
+                compute_v1.InstancesClient().insert(
+                    project=self.project, zone=zone, instance_resource=self._instance(node, zone)
+                ).result()
+            except GoogleAPICallError as error:
+                if not self._is_stockout(error):
+                    raise  # quota, permission, bad request: another zone would not help
+                out_of_capacity.append(zone)
+                later = node.zones[len(out_of_capacity):]
+                if not later:
+                    raise RuntimeError(
+                        f"{node.name}: no capacity for {node.machine_type} in any of {list(node.zones)} "
+                        "(Google reports the zone is out of resources). Try again later, or add more zones to fallback_locations."
+                    ) from error
+                log(f"{node.name}: no capacity for {node.machine_type} in {zone}; trying {later[0]}")
+                continue
+            if out_of_capacity:
+                log(f"{node.name}: created in {zone} (no capacity in {', '.join(out_of_capacity)})")
+            return
 
     def start(self, node: Node) -> None:
-        inst = self._get(node)
+        inst, zone = self._find(node)
         if not inst:
             raise RuntimeError(f"{node.name} does not exist; run `fedlab up`")
         if _STATE.get(inst.status) == "stopped":
-            compute_v1.InstancesClient().start(
-                project=self.project, zone=node.location, instance=node.name
-            ).result()
+            compute_v1.InstancesClient().start(project=self.project, zone=zone, instance=node.name).result()
 
     def stop(self, node: Node) -> None:
-        inst = self._get(node)
+        inst, zone = self._find(node)
         if inst and _STATE.get(inst.status) in ("pending", "running"):
-            compute_v1.InstancesClient().stop(
-                project=self.project, zone=node.location, instance=node.name
-            ).result()
+            compute_v1.InstancesClient().stop(project=self.project, zone=zone, instance=node.name).result()
 
     def describe(self, node: Node) -> NodeInfo:
-        inst = self._get(node)
+        inst, zone = self._find(node)
         if not inst:
             return NodeInfo(node.name, "gcp", node.location, "absent")
         state = _STATE.get(inst.status, inst.status.lower())
@@ -160,7 +188,7 @@ class GcpProvider(Provider):
         if state == "running":
             ts = inst.last_start_timestamp or inst.creation_timestamp
             since = datetime.fromisoformat(ts) if ts else None
-        return NodeInfo(node.name, "gcp", node.location, state, public_ip=ip, running_since=since)
+        return NodeInfo(node.name, "gcp", zone, state, public_ip=ip, running_since=since)  # the zone it is really in
 
     def destroy(self, nodes: list[Node], dry_run: bool = False, log: Callable[[str], None] | None = None) -> list[str]:
         log = log or (lambda message: None)
@@ -168,7 +196,7 @@ class GcpProvider(Provider):
         flt = f"labels.{TAG_KEY} = {self.cfg.run_name}"
         instances = compute_v1.InstancesClient()
         disks = compute_v1.DisksClient()
-        for zone in sorted({n.location for n in nodes}):
+        for zone in sorted({z for n in nodes for z in n.zones}):  # fallback zones too: a VM may have landed there
             tag = f"[gcp {zone}]"
             ops = []
             for i in instances.list(request=compute_v1.ListInstancesRequest(project=self.project, zone=zone, filter=flt)):
@@ -245,23 +273,25 @@ class GcpProvider(Provider):
             "gcp: Ubuntu 22.04 image",
             lambda: compute_v1.ImagesClient().get_from_family(project="ubuntu-os-cloud", family="ubuntu-2204-lts").name,
         )
-        for n in nodes:
-            if n.accelerator:
+        for node in nodes:
+            for zone in node.zones:  # a fallback zone is only useful if it can really host the node
+                n = dataclasses.replace(node, location=zone)
+                if n.accelerator:
+                    run(
+                        f"gcp {n.location}: {n.name} accelerator {n.accelerator}",
+                        lambda n=n: compute_v1.AcceleratorTypesClient().get(
+                            project=self.project, zone=n.location, accelerator_type=n.accelerator
+                        ).name,
+                    )
+                    run(f"gcp {n.location}: {n.name} GPU quota", lambda n=n: self._gpu_quota(n))
                 run(
-                    f"gcp {n.location}: {n.name} accelerator {n.accelerator}",
-                    lambda n=n: compute_v1.AcceleratorTypesClient().get(
-                        project=self.project, zone=n.location, accelerator_type=n.accelerator
+                    f"gcp {n.location}: {n.name} machine type",
+                    lambda n=n: compute_v1.MachineTypesClient().get(
+                        project=self.project, zone=n.location, machine_type=n.machine_type
                     ).name,
                 )
-                run(f"gcp {n.location}: {n.name} GPU quota", lambda n=n: self._gpu_quota(n))
-            run(
-                f"gcp {n.location}: {n.name} machine type",
-                lambda n=n: compute_v1.MachineTypesClient().get(
-                    project=self.project, zone=n.location, machine_type=n.machine_type
-                ).name,
-            )
-            run(
-                f"gcp {n.location}: list instances",
-                lambda n=n: next(iter(compute_v1.InstancesClient().list(project=self.project, zone=n.location)), None) and "ok",
-            )
+                run(
+                    f"gcp {n.location}: list instances",
+                    lambda n=n: next(iter(compute_v1.InstancesClient().list(project=self.project, zone=n.location)), None) and "ok",
+                )
         return results

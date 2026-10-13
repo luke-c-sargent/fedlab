@@ -69,3 +69,32 @@ def test_cloud_init_installs_nvidia_driver_only_when_asked(tmp_path):
     plain = yaml.safe_load(cloud_init.render("ubuntu"))
     assert [f["path"] for f in plain["write_files"]] == ["/etc/apt/apt.conf.d/99fedlab"]  # apt settings on every node
     assert "ubuntu-drivers-common" not in plain["packages"]
+
+
+def test_fallback_locations_are_for_gcp_and_must_all_differ():
+    import pytest
+    from pydantic import ValidationError
+
+    from fedlab.config import NodeSpec
+
+    ok = NodeSpec(provider="gcp", location="us-central1-a", fallback_locations=["us-central1-b"])
+    assert ok.fallback_locations == ["us-central1-b"]
+    with pytest.raises(ValidationError, match="only supported for GCP"):
+        NodeSpec(provider="aws", location="us-west-2", fallback_locations=["us-west-1"])
+    with pytest.raises(ValidationError, match="must all differ"):
+        NodeSpec(provider="gcp", location="us-central1-a", fallback_locations=["us-central1-b", "us-central1-a"])
+
+
+def test_a_resolved_node_lists_its_zones_and_keeps_its_name(tmp_path):
+    from fedlab.config import NodeSpec, Settings
+
+    cfg = Settings(
+        state_dir=tmp_path,
+        nodes=[
+            NodeSpec(role="server", provider="aws", location="eu-west-1"),
+            NodeSpec(role="client", site="gtex", provider="gcp", location="us-central1-a", fallback_locations=["us-central1-b"]),
+        ],
+    )
+    gcp = cfg.resolved_nodes()[1]
+    assert gcp.zones == ("us-central1-a", "us-central1-b") and gcp.name.endswith("-gcp-us-central1-a")
+    assert cfg.resolved_nodes()[0].zones == ("eu-west-1",)

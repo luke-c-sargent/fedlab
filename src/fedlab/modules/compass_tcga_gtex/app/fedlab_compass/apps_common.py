@@ -24,3 +24,10 @@ def client_backend(run_config, node_config) -> ClientBackend:
     from .real import RealClient
 
     return RealClient(site, run_config, node_config)
+
+
+def server_backend_factory(run_config):
+    """A picklable recipe for `server_backend(run_config)`, for runs that rebuild the backend between steps."""
+    from functools import partial
+
+    return partial(server_backend, dict(run_config))

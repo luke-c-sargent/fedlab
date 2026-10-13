@@ -33,8 +33,11 @@ class Provider(ABC):
         self.key = key
 
     @abstractmethod
-    def up(self, node: Node) -> None:
-        """Create the node (and shared firewall/key) if missing; start it if stopped. Idempotent."""
+    def up(self, node: Node, log: Callable[[str], None] | None = None) -> None:
+        """Create the node (and shared firewall/key) if missing; start it if stopped. Idempotent.
+
+        `log` receives a line when the provider does something worth telling the user, such as using a fallback zone.
+        """
 
     @abstractmethod
     def start(self, node: Node) -> None: ...

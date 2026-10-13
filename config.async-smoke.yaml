@@ -1,0 +1,24 @@
+# A cheap smoke test of the file-based module on real clouds: small CPU machines, small synthetic data, numpy training.
+# Separate run_name and state_dir from config.yaml, so `fedlab destroy -c` here can only touch these resources.
+# Run:  uv run fedlab experiment -c config.async-smoke.yaml --destroy-on-failure
+run_name: fedasync-smoke
+name_prefix: fedasync
+state_dir: .fedlab/async-smoke
+disk_gb: 30
+ports: [22]                       # file-based runs open no Flower port
+aws_machine_type: m5.large        # 2 vCPU / 8 GB
+gcp_machine_type: n2-standard-2   # 2 vCPU / 8 GB
+
+nodes:
+  - {role: server, provider: aws, location: eu-west-1}
+  - {role: client, site: tcga, provider: aws, location: us-west-2}
+  - {role: client, site: gtex, provider: gcp, location: us-central1-a}
+
+module: compass_tcga_gtex_async
+module_options:
+  compass_repo: ~/code/federated-learning-model
+  tcga_tsv: .fedlab/async-smoke/data/tcga.tsv
+  gtex_tsv: .fedlab/async-smoke/data/gtex.tsv
+  backend: stub
+  rounds: 2
+  patience: 5

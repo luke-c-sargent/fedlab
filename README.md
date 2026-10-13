@@ -2,7 +2,7 @@
 
 fedlab runs federated-learning experiments on AWS and GCP. It starts the VMs, installs an experiment, runs it, copies the results to your machine, and removes the VMs.
 
-An experiment is a **module**. The module `compass_tcga_gtex` trains the COMPASS foundation model on TCGA and GTEx with [Flower](https://flower.ai).
+An experiment is a **module**. The module `compass_tcga_gtex` trains the COMPASS foundation model on TCGA and GTEx with [Flower](https://flower.ai). The module `compass_tcga_gtex_async` runs the same training as files instead of connections (see [File-based runs](#file-based-runs-fedlab-async)). `smoke` is a tiny numpy FedAvg that checks provisioning, TLS, and result collection.
 
 ## Default fleet
 
@@ -87,7 +87,7 @@ Options (`module_options`):
 
 - Flower 1.33 needs Python 3.11, so the module uses `torch 2.0.1` and `torchvision 0.15.2` (see `requirements.txt`).
 - Each message runs in a new process. The Adam state is saved in a file on the node between rounds. It is too large for the 4 MiB `context.state` channel of Flower. The dropout RNG is seeded again each round.
-- There are no per-message audit receipts. Each node checks its prepared data once during `deploy`.
+- Each node checks its prepared data once during `deploy`. Every reply also carries one value, the hash of the federated manifest the client used, and the server rejects a reply that differs from its own. The original sent three more dataset ids with each reply. They are not ported.
 - Only the default path is ported: historical protocol, scratch initialization, random negatives, and the full GTEx set. Other settings raise an error.
 
 ## Add a module
@@ -106,7 +106,99 @@ A module is a class that implements `FLModule` (`src/fedlab/modules/base.py`):
 
 `d` is a `Deployment`: the server and clients, each with a `Host` for commands, file copies, and services. For a Flower app, subclass `FlowerModule` (`src/fedlab/modules/flower_module.py`). It handles the Python 3.11 environment, TLS, node authentication, `flwr run`, and result collection. You supply the app directory, a requirements file, and the run config. `src/fedlab/modules/smoke/` is a small example. Register the class in `src/fedlab/modules/__init__.py`.
 
-## Flower deployment
+## File-based runs (`fedlab-async`)
+
+`fedlab-async` runs the same federated training without any connection between the server and the sites. The server writes **request files**. Each site runs its request and writes a **response file**. The server reads the responses, aggregates, and writes the next requests. You move the files by any means: `rsync`, a shared bucket, a USB drive.
+
+There are two ways to use it:
+
+- **Directly.** `fedlab-async` needs no cloud account, no SSH, and no `fedlab` install. Each site runs `fedlab-async client` on its own machine. Use this between institutions that cannot reach each other.
+- **Through `fedlab`.** For a fleet you own, the module `compass_tcga_gtex_async` creates the VMs, installs everything, runs the same `fedlab-async` commands on them over SSH, and copies the files for you. Use this for testing on real machines. See [Run it on a fleet with `fedlab`](#run-it-on-a-fleet-with-fedlab).
+
+The code is in `src/fedlab_async/`. It does not import `fedlab`, and its core does not import Flower. Flower strategies and `ClientApp`s run through an adapter. A plain adapter runs ordinary Python functions.
+
+### Server
+
+A run directory holds `exchange/` (the only part you move), `private/` (state, lock, audit log, copies of outstanding requests) and `results/`. Never share `private/`: its state file is a pickle, so whoever can write it controls the server.
+
+```sh
+uv run fedlab-async init run1 --config run.yaml   # create the run
+uv run fedlab-async emit run1                     # write request files; move them to the sites
+uv run fedlab-async status run1                   # who is outstanding
+uv run fedlab-async collect run1                  # read responses; advances only when every site has answered
+```
+
+Repeat `emit` and `collect` until `status` says `finished`. `emit` and `collect` are separate, so you can wait days between them. A response that fails a check (it belongs to another run or round, it was cut short, or its content is invalid) is moved to `exchange/rejected/` with a reason, and that site stays outstanding.
+
+If a request file is lost or damaged in transit, `fedlab-async reissue run1` puts it back from the server's private copy, with the same nonce. `fedlab-async inspect FILE` shows the header of any exchange file and whether its payload is intact.
+
+### Site
+
+```sh
+uv run fedlab-async client --exchange exchange/ --state-dir ~/fedlab-state \
+    --site-file site.yaml --app fedlab_compass.async_client:app
+```
+
+Without request files on the command line, `client` runs this node's pending requests (`node_id` in the site file). Running a request again is safe. A request older than the last one the node ran is refused. If the client fails, it writes no response and keeps its state. For plain functions, use `--plain package.module:function`.
+
+Put the directories that hold the program and client classes on the import path with `--path DIR` (repeatable) or `FEDLAB_ASYNC_PATH` (separated by `:`).
+
+### COMPASS example
+
+`run.yaml` (server):
+
+```yaml
+program: fedlab_compass.async_run:build
+options:
+  code_root: ~/code/federated-learning-model/compass_hpc_foundation_model_train
+  backend: compass            # or stub, to test the plumbing
+  rounds: 100
+  patience: 10
+  seed: 42
+  # compass_source: ~/COMPASS # a checkout; puts the COMPASS commit in the code identity (or give compass_commit)
+  nodes:                      # sha256 and bytes are measured by reading the file, if you leave them out
+    1: {site: tcga, source: https://data.example.org/tcga_compass_tpm.tsv}
+    2: {site: gtex, source: file:///data/gtex_compass_tpm.tsv}
+```
+
+`site.yaml` (at each site). `backend` and `seed` must match `run.yaml`:
+
+```yaml
+node_id: 1
+node: {site: tcga, workdir: ~/fedlab-site, cache: ~/fedlab-cache, code_root: ~/code/federated-learning-model/compass_hpc_foundation_model_train}
+run: {backend: compass, seed: 42, device: cuda, micro-batch-size: 16, num-workers: 0, cpu-threads: 8, local-epochs: 1}
+```
+
+The first step is **prepare**. Each site fetches its assigned raw file and checks its hash, then prepares its own data. It reports its per-gene minimum and maximum values, its prepared-data manifest (sample counts and hashes), and the gene list. It sends no sample rows. The server combines the reports into the global scaler and the federated manifest, and sends both with every later request. Then training runs as usual.
+
+Every site must install the training code itself: the two directories of `federated-learning-model`, the pinned COMPASS source, and the Python environment from `requirements.txt` plus `typer` and `pyyaml`. Each request carries a hash of the expected code: every `*.py` and `*.json` file in those directories, and the COMPASS commit if you set `compass_source` or `compass_commit`. A site whose code differs refuses to run.
+
+Data sources for `file://` and `http(s)://` exist today. For S3 or DRS, add a `Source` (see `src/fedlab_async/assets.py`).
+
+**Status.** Real COMPASS training has run as files on CPU with synthetic data, and its losses and weights were identical to a live run. GPU runs, real TCGA and GTEx data, and runs over real SSH connections have not been tried.
+
+### Run it on a fleet with `fedlab`
+
+Set `module: compass_tcga_gtex_async` in `config.yaml`. The usual commands then work as for the live module: `fedlab up`, `deploy`, `run`, `collect`, `destroy`, or `fedlab experiment` for all of them.
+
+```yaml
+module: compass_tcga_gtex_async
+module_options:
+  compass_repo: ~/code/federated-learning-model
+  tcga_tsv: ~/data/TCGA_dataset/processed/tcga_compass_tpm.tsv   # raw files; the sites prepare their own data from them
+  gtex_tsv: ~/data/GTEx_dataset/processed/gtex_compass_tpm.tsv
+  rounds: 100               # patience, seed, device, and the other training options are as for compass_tcga_gtex
+  # backend: stub           # real data preparation, numpy training
+  # install_environment: false   # the nodes already have ~/fl
+```
+
+- `deploy` installs the environment and the code on every node, uploads each site's raw file, writes the run and site files, and runs `fedlab-async init` on the server. It starts no Flower services, and `fedlab prepare` is not needed.
+- `run` repeats one step until `fedlab-async status` says `finished`: `emit` on the server, copy each request to its site, run `fedlab-async client` on both sites in parallel, copy the responses back, `collect`.
+- `collect` copies `results/` (the model files and `rounds.json`) and the audit log. There are no service logs, so `fedlab logs` has nothing to show. To debug, run `fedlab ssh <node>` and use `fedlab-async status` or `inspect` there.
+
+This fits fleets you control. It does not fit institutions that do not trust each other, because `fedlab` holds SSH access to every node. There, use `fedlab-async` directly. On CPU, with the same data, seed, and thread count, the results matched the live module exactly. GPU training is not bit-reproducible in general.
+
+## Flower deployment (live modules)
 
 - The server runs the SuperLink and submits runs. Each client runs a SuperNode.
 - `deploy` creates a new CA, a server certificate for the current IP of the server, and one key per SuperNode. Only registered SuperNodes can join. Stop and start change the IPs, so run `deploy` again afterward.
@@ -129,6 +221,14 @@ The same directory holds the SSH keypair `id_ed25519`. `destroy` keeps it.
 - **GCP:** `accelerator:` attaches a GPU to an N1 machine. fedlab sets the maintenance policy to terminate, because GPU VMs cannot live-migrate.
 
 `check` tests the AWS vCPU quota with a launch dry run. It also tests the GCP GPU quota.
+
+**GCP capacity.** Google can refuse a launch when a zone is out of GPU machines (`ZONE_RESOURCE_POOL_EXHAUSTED`). No call can tell you that in advance, so `check` cannot see it. For a GCP node, list other zones to try in order:
+
+```yaml
+- {role: client, site: gtex, provider: gcp, location: us-central1-a, fallback_locations: [us-central1-b, us-central1-c], machine_type: g2-standard-4, gpu: true}
+```
+
+`up` tries `location` first and moves to the next zone only on this error. Quota and permission errors stop at once, because another zone would not help. The node keeps its name (it still ends in `us-central1-a`), and `status`, `start`, `stop`, and `destroy` look in every listed zone. `check` tests the machine type in each zone. Fallback zones are for GCP only. For AWS, a launch in a region that is out of capacity is not retried elsewhere.
 
 ## Ports and security
 
@@ -156,9 +256,11 @@ GCP firewall rules cannot carry labels. `destroy` removes them by name: `<run_na
 
 ## Tests
 
-Run `uv run pytest`. The tests use mocks (moto for AWS) and a fake Flower grid. They make no cloud calls.
+Run `uv run pytest`. The tests use mocks (moto for AWS), a fake Flower grid, and fake nodes (directories on this machine). They make no cloud calls. The tests of the COMPASS preparation and of the file-based runs run the original scripts, so they need a checkout of `federated-learning-model` (`FEDLAB_REPO`, default `~/code/federated-learning-model`). They are skipped without it.
 
-Two slow tests are opt-in:
+Slow tests are opt-in:
 
 - `FEDLAB_E2E=1` runs the full lifecycle on local fake nodes with real Flower (TLS, node auth). It needs network access.
-- `FEDLAB_E2E_REAL=1` runs the real COMPASS training on synthetic data on CPU. The docstring of `tests/test_e2e_compass_real.py` lists the setup.
+- `FEDLAB_E2E_REAL=1` runs the real COMPASS training on synthetic data on CPU, in three forms: live (`tests/test_e2e_compass_real.py`), as files (`tests/test_e2e_compass_real_async.py`), and as files moved by the `fedlab` module (same file). The docstrings list the setup and how to compare the losses with a live run.
+
+Run the real tests one after the other. The live test reinstalls torch into `FEDLAB_REAL_ENV`, and any other process that uses that environment at the same time can fail while it does.
