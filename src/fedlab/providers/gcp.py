@@ -39,13 +39,32 @@ class GcpProvider(Provider):
     def _net_tag(self, role: str) -> str:
         return f"{self.cfg.run_name}-{role}"
 
+    def _foreign_owner(self, inst) -> str | None:
+        """Who owns an instance of this name, if it is not this run: another run's name, or "no fedlab run"."""
+        owner = inst.labels.get(TAG_KEY)
+        if owner == self.cfg.run_name:
+            return None
+        return f"run {owner!r}" if owner else "no fedlab run (it has no fedlab-run label)"
+
     def _find(self, node: Node):
-        """(instance, zone) for the node, looking in its zone and then its fallback zones; (None, location) if absent."""
+        """(instance, zone) for the node, looking in its zone and then its fallback zones; (None, location) if absent.
+
+        Instance names are shared by the whole GCP project, so a VM with this node's name may belong to another
+        experiment. Refuse it, instead of starting, stopping, or reporting on someone else's machine.
+        """
         for zone in node.zones:
             try:
-                return compute_v1.InstancesClient().get(project=self.project, zone=zone, instance=node.name), zone
+                inst = compute_v1.InstancesClient().get(project=self.project, zone=zone, instance=node.name)
             except NotFound:
                 continue
+            owner = self._foreign_owner(inst)
+            if owner:
+                raise RuntimeError(
+                    f"{node.name} already exists in {zone}, but it belongs to {owner}, not to run {self.cfg.run_name!r}. "
+                    "Instance names are shared by the whole GCP project: give each experiment its own name_prefix, "
+                    "or destroy the other one first."
+                )
+            return inst, zone
         return None, node.location
 
     def _get(self, node: Node):
@@ -248,6 +267,17 @@ class GcpProvider(Provider):
                 return f"{metric} {q.usage:.0f}/{q.limit:.0f} used in {region}"
         raise RuntimeError(f"no {metric} quota entry in {region}")
 
+    def _name_is_free(self, node: Node) -> str:
+        """Read-only: fail if an instance with this node's name belongs to another run."""
+        try:
+            inst = compute_v1.InstancesClient().get(project=self.project, zone=node.location, instance=node.name)
+        except NotFound:
+            return "no instance of that name"
+        owner = self._foreign_owner(inst)
+        if owner:
+            raise RuntimeError(f"an instance named {node.name} already exists and belongs to {owner}; use a different name_prefix")
+        return "an instance of this run (will be reused)"
+
     def check(self, nodes: list[Node]) -> list[CheckResult]:
         import google.auth
 
@@ -290,6 +320,7 @@ class GcpProvider(Provider):
                         project=self.project, zone=n.location, machine_type=n.machine_type
                     ).name,
                 )
+                run(f"gcp {n.location}: {n.name} name not used by another run", lambda n=n: self._name_is_free(n))
                 run(
                     f"gcp {n.location}: list instances",
                     lambda n=n: next(iter(compute_v1.InstancesClient().list(project=self.project, zone=n.location)), None) and "ok",

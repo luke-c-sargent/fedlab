@@ -16,6 +16,135 @@ One server and two GPU clients. Each VM has a 200 GB disk and runs Ubuntu 22.04 
 
 Exactly one node must have `role: server`. A client with a `site` holds the data of that site. Destroy the fleet when it is idle.
 
+## Architecture
+
+### Live run (Flower)
+
+```mermaid
+%%{init: {"theme": "base", "flowchart": {"wrappingWidth": 600, "nodeSpacing": 20, "rankSpacing": 20, "padding": 10}, "themeVariables": {"fontSize": "17px", "textColor": "#1b2330", "primaryTextColor": "#1b2330", "lineColor": "#6b7280", "edgeLabelBackground": "#ffffff", "clusterBkg": "#ffffff", "clusterBorder": "#6b7280"}}}%%
+flowchart TB
+  local["<b><span style='font-size:22px'>Local computer</span></b><br/>fedlab CLI"]
+  apis(["AWS and GCP APIs"])
+  subgraph tcga[" "]
+    direction TB
+    th["Client VM: TCGA <br/> AWS us-east"]
+    a1("ClientApp <br/> GPU, local data")
+    n1("SuperNode <br/> dials out to 9092")
+  end
+  subgraph gtex[" "]
+    direction TB
+    gh["Client VM: GTEx <br/> GCP us-central"]
+    a2("ClientApp <br/> GPU, local data")
+    n2("SuperNode <br/> dials out to 9092")
+  end
+  subgraph server[" "]
+    direction TB
+    sh["Server VM <br/> AWS eu-west"]
+    link("SuperLink <br/> Fleet API, inbound 9092 <br/> gRPC over HTTP/2, TLS")
+    app("ServerApp")
+  end
+  th ~~~ a1
+  gh ~~~ a2
+  sh ~~~ link
+  a1 --- n1
+  a2 --- n2
+  link <-->|"loopback only: 9091, 9093"| app
+  n1 ==> sh
+  n2 ==> sh
+  local -.->|"SSH 22, rsync"| th
+  local -.->|"SSH 22, rsync"| gh
+  local -.->|"SSH 22, rsync"| sh
+  local -.->|"HTTPS: create and destroy VMs"| apis
+
+  classDef hw fill:#eceff4,stroke:#475569,stroke-width:3px,color:#1b2330
+  classDef hdr fill:none,stroke:none,color:#1b2330,font-size:22px,font-weight:bold
+  classDef soft fill:#ffffff,stroke:#475569,stroke-width:1px,color:#1b2330
+  classDef store fill:#f5f2fc,stroke:#6d4fc2,stroke-width:1px,color:#1b2330
+  classDef ext fill:#e5e7eb,stroke:#6b7280,stroke-width:1px,color:#1b2330
+  class th,gh,sh hdr
+  class local hw
+  class a1,n1,a2,n2,link,app soft
+  class apis ext
+  style tcga fill:#def2e3,stroke:#ec7211,stroke-width:4px,color:#1b2330
+  style gtex fill:#def2e3,stroke:#1a73e8,stroke-width:4px,color:#1b2330
+  style server fill:#e9e3f8,stroke:#ec7211,stroke-width:4px,color:#1b2330
+  linkStyle 0 stroke:none,fill:none
+  linkStyle 1 stroke:none,fill:none
+  linkStyle 2 stroke:none,fill:none
+  linkStyle 3 stroke:#475569,stroke-width:1px
+  linkStyle 4 stroke:#475569,stroke-width:1px
+  linkStyle 5 stroke:#6d4fc2,stroke-width:2px
+  linkStyle 6 stroke:#6d4fc2,stroke-width:4px
+  linkStyle 7 stroke:#6d4fc2,stroke-width:4px
+  linkStyle 8 stroke:#6b7280,stroke-width:2px
+  linkStyle 9 stroke:#6b7280,stroke-width:2px
+  linkStyle 10 stroke:#6b7280,stroke-width:2px
+  linkStyle 11 stroke:#6b7280,stroke-width:2px
+```
+
+### File-based run (`fedlab-async`)
+
+```mermaid
+%%{init: {"theme": "base", "flowchart": {"wrappingWidth": 600, "nodeSpacing": 20, "rankSpacing": 20, "padding": 10}, "themeVariables": {"fontSize": "17px", "textColor": "#1b2330", "primaryTextColor": "#1b2330", "lineColor": "#6b7280", "edgeLabelBackground": "#ffffff", "clusterBkg": "#ffffff", "clusterBorder": "#6b7280"}}}%%
+flowchart TB
+  local["<b><span style='font-size:22px'>Local computer</span></b><br/>File transfer: by hand or fedlab over SSH <br/> rsync, bucket, USB"]
+  subgraph s1[" "]
+    direction TB
+    h1["Site machine: TCGA"]
+    c1("fedlab-async client <br/> runs requests")
+  end
+  subgraph s2[" "]
+    direction TB
+    h2["Site machine: GTEx"]
+    c2("fedlab-async client <br/> runs requests")
+  end
+  subgraph server[" "]
+    direction TB
+    hs["Server machine"]
+    cmds("fedlab-async <br/> emit, collect")
+    run[("run directory <br/> exchange/ private/ <br/> results/")]
+  end
+  h1 ~~~ c1
+  h2 ~~~ c2
+  hs ~~~ cmds
+  cmds --- run
+  local <-.->|"files, no inbound ports <br/> (22 with fedlab)"| s1
+  local <-.->|"files, no inbound ports <br/> (22 with fedlab)"| s2
+  local <-.->|"files, no inbound ports <br/> (22 with fedlab)"| server
+
+  classDef hw fill:#eceff4,stroke:#475569,stroke-width:3px,color:#1b2330
+  classDef hdr fill:none,stroke:none,color:#1b2330,font-size:22px,font-weight:bold
+  classDef soft fill:#ffffff,stroke:#475569,stroke-width:1px,color:#1b2330
+  classDef store fill:#f5f2fc,stroke:#6d4fc2,stroke-width:1px,color:#1b2330
+  classDef ext fill:#e5e7eb,stroke:#6b7280,stroke-width:1px,color:#1b2330
+  class h1,h2,hs hdr
+  class local hw
+  class cmds,c1,c2 soft
+  class run store
+  style server fill:#e9e3f8,stroke:#6d4fc2,stroke-width:4px,color:#1b2330
+  style s1 fill:#def2e3,stroke:#2f8f57,stroke-width:4px,color:#1b2330
+  style s2 fill:#def2e3,stroke:#2f8f57,stroke-width:4px,color:#1b2330
+  linkStyle 0 stroke:none,fill:none
+  linkStyle 1 stroke:none,fill:none
+  linkStyle 2 stroke:none,fill:none
+  linkStyle 3 stroke:#6d4fc2,stroke-width:1px
+  linkStyle 4 stroke:#6b7280,stroke-width:3px
+  linkStyle 5 stroke:#6b7280,stroke-width:3px
+  linkStyle 6 stroke:#6b7280,stroke-width:3px
+```
+
+|  | Live (Flower) | File-based |
+|---|---|---|
+| Server inbound | 22, 9092 (TCP) | none (22 if `fedlab` drives it over SSH) |
+| Client inbound | 22 | none (22 if `fedlab` drives it over SSH) |
+| Client outbound | to server:9092, held open | none |
+| Protocol | gRPC over HTTP/2, TLS | files; any transport |
+| Who connects | clients dial the server | nobody |
+| Authentication | per-node keys, private CA | hash, nonce, and sequence number in each file |
+| Encryption | TLS | left to the transport |
+| After a VM restart | IPs change; run `deploy` again | nothing to redo |
+| Both ends online together | yes | no |
+
 ## Setup
 
 1. Make sure that `ssh` and `rsync` are on your machine.
@@ -173,9 +302,7 @@ The first step is **prepare**. Each site fetches its assigned raw file and check
 
 Every site must install the training code itself: the two directories of `federated-learning-model`, the pinned COMPASS source, and the Python environment from `requirements.txt` plus `typer` and `pyyaml`. Each request carries a hash of the expected code: every `*.py` and `*.json` file in those directories, and the COMPASS commit if you set `compass_source` or `compass_commit`. A site whose code differs refuses to run.
 
-Data sources for `file://` and `http(s)://` exist today. For S3 or DRS, add a `Source` (see `src/fedlab_async/assets.py`).
-
-**Status.** Real COMPASS training has run as files on CPU with synthetic data, and its losses and weights were identical to a live run. GPU runs, real TCGA and GTEx data, and runs over real SSH connections have not been tried.
+Data sources: `file://` and `http(s)://`. For S3 or DRS, add a `Source` (see `src/fedlab_async/assets.py`).
 
 ### Run it on a fleet with `fedlab`
 
@@ -196,7 +323,7 @@ module_options:
 - `run` repeats one step until `fedlab-async status` says `finished`: `emit` on the server, copy each request to its site, run `fedlab-async client` on both sites in parallel, copy the responses back, `collect`.
 - `collect` copies `results/` (the model files and `rounds.json`) and the audit log. There are no service logs, so `fedlab logs` has nothing to show. To debug, run `fedlab ssh <node>` and use `fedlab-async status` or `inspect` there.
 
-This fits fleets you control. It does not fit institutions that do not trust each other, because `fedlab` holds SSH access to every node. There, use `fedlab-async` directly. On CPU, with the same data, seed, and thread count, the results matched the live module exactly. GPU training is not bit-reproducible in general.
+This fits fleets you control. It does not fit institutions that do not trust each other, because `fedlab` holds SSH access to every node. There, use `fedlab-async` directly. On CPU, with the same data, seed, and thread count, the results equal those of the live module. GPU training is not bit-reproducible.
 
 ## Flower deployment (live modules)
 
@@ -250,6 +377,7 @@ fedlab tags every resource with `fedlab-run=<run_name>`. `destroy` removes only 
 GCP firewall rules cannot carry labels. `destroy` removes them by name: `<run_name>-server` and `<run_name>-client`.
 
 - Use a unique `run_name`. Two stacks with the same name delete each other.
+- To run experiments at the same time, give each its own `run_name`, `name_prefix`, and `state_dir`. GCP instance names are shared by the whole project, so two experiments with the same `name_prefix` and zone would get the same VM name. `up`, `start`, `stop`, `status`, and `check` refuse a VM that carries another run's label (or none) and name it in the error. AWS nodes are matched by tag as well as name, so a different `run_name` is enough there. `fedlab` does not lock against two commands on the same config at once, and the vCPU and GPU quotas are shared by the whole account.
 - If you remove a region from the config, destroy its resources first.
 
 `status` warns when a node runs for more than `warn_after_days` (default 3).

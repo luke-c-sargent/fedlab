@@ -42,7 +42,7 @@ def test_up_creates_firewall_and_instance_with_expected_shape(cfg):
 def test_describe_maps_state_and_ip(cfg):
     prov = _prov(cfg)
     node = cfg.resolved_nodes()[2]
-    inst = MagicMock(status="TERMINATED")
+    inst = MagicMock(status="TERMINATED", labels={"fedlab-run": "fedlearn"})
     with patch.object(gcpmod.compute_v1, "InstancesClient") as ic:
         ic.return_value.get.return_value = inst
         inst.network_interfaces = []
@@ -102,7 +102,9 @@ def test_up_refuses_to_reuse_a_vm_of_a_different_type(cfg):
 
     prov = _prov(cfg)
     node = dataclasses.replace(cfg.resolved_nodes()[2], machine_type="g2-standard-4")
-    existing = MagicMock(machine_type="https://www.googleapis.com/compute/v1/projects/p/zones/z/machineTypes/n1-highmem-8")
+    existing = MagicMock(
+        machine_type="https://www.googleapis.com/compute/v1/projects/p/zones/z/machineTypes/n1-highmem-8", labels={"fedlab-run": "fedlearn"}
+    )
     with patch.object(gcpmod.compute_v1, "InstancesClient") as ic:
         ic.return_value.get.return_value = existing
         with pytest.raises(RuntimeError, match=r"already exists as n1-highmem-8.*g2-standard-4.*fedlab destroy"):
@@ -183,7 +185,7 @@ def test_without_fallback_zones_a_stockout_is_still_a_clear_error(cfg):
 def _only_in(zone, status="RUNNING"):
     """An InstancesClient().get that finds the VM in `zone` only."""
     inst = MagicMock(status=status, network_interfaces=[], machine_type="zones/z/machineTypes/n1-highmem-8",
-                     last_start_timestamp="2026-10-12T12:00:00+00:00")
+                     last_start_timestamp="2026-10-12T12:00:00+00:00", labels={"fedlab-run": "fedlearn"})
 
     def get(project, zone, instance):  # noqa: ANN001
         if zone == _only_in.target:
@@ -242,12 +244,74 @@ def test_check_verifies_every_candidate_zone(cfg):
     quota = MagicMock(metric="NVIDIA_T4_GPUS", limit=4, usage=0)
     with patch("google.auth.default", return_value=(None, "proj")), patch.object(gcpmod.compute_v1, "FirewallsClient"), patch.object(
         gcpmod.compute_v1, "ImagesClient"
-    ), patch.object(gcpmod.compute_v1, "InstancesClient"), patch.object(gcpmod.compute_v1, "AcceleratorTypesClient"), patch.object(
+    ), patch.object(gcpmod.compute_v1, "InstancesClient") as ic, patch.object(gcpmod.compute_v1, "AcceleratorTypesClient"), patch.object(
         gcpmod.compute_v1, "RegionsClient"
     ) as rc, patch.object(gcpmod.compute_v1, "MachineTypesClient") as mc:
+        ic.return_value.get.side_effect = NotFound("x")
         rc.return_value.get.return_value.quotas = [quota]
         results = prov.check([node])
     assert all(r.ok for r in results)
     assert [c.kwargs["zone"] for c in mc.return_value.get.call_args_list] == list(ZONES)
     assert {r.name.split(":")[0] for r in results if "machine type" in r.name} == {f"gcp {z}" for z in ZONES}
     assert sum("list instances" in r.name for r in results) == 3  # the permission check still runs per zone
+    assert sum("not used by another run" in r.name for r in results) == 3
+
+
+# ---- two experiments in one GCP project: instance names are shared, labels say who owns what -------------------
+
+def _owned_by(label):
+    return MagicMock(
+        status="RUNNING", network_interfaces=[], machine_type="zones/z/machineTypes/n1-highmem-8",
+        last_start_timestamp="2026-10-12T12:00:00+00:00", labels=({"fedlab-run": label} if label else {}),
+    )
+
+
+@pytest.mark.parametrize("label, who", [("fedasync-smoke", "run 'fedasync-smoke'"), (None, "no fedlab run")])
+@pytest.mark.parametrize("action", ["up", "start", "stop", "describe"])
+def test_a_vm_of_another_run_is_never_adopted_started_stopped_or_reported(cfg, action, label, who):
+    prov, node = _prov(cfg), cfg.resolved_nodes()[2]
+    with patch.object(gcpmod.compute_v1, "InstancesClient") as ic, patch.object(gcpmod.compute_v1, "FirewallsClient"):
+        ic.return_value.get.return_value = _owned_by(label)
+        with pytest.raises(RuntimeError, match=rf"{node.name} already exists in us-central1-a, but it belongs to {who}.*name_prefix"):
+            getattr(prov, action)(node)
+    for call in ("insert", "start", "stop", "delete"):
+        getattr(ic.return_value, call).assert_not_called()
+
+
+def test_a_vm_of_this_run_is_still_used(cfg):
+    prov, node = _prov(cfg), cfg.resolved_nodes()[2]
+    with patch.object(gcpmod.compute_v1, "InstancesClient") as ic:
+        ic.return_value.get.return_value = _owned_by("fedlearn")
+        assert prov.describe(node).state == "running"
+        prov.up(node)
+    ic.return_value.insert.assert_not_called()
+
+
+def test_destroy_still_removes_only_what_carries_this_runs_label(cfg):
+    """destroy lists by label, so it neither needs nor trips the name check, and never touches another run's VM."""
+    prov, node = _prov(cfg), cfg.resolved_nodes()[2]
+    with patch.object(gcpmod.compute_v1, "InstancesClient") as ic, patch.object(gcpmod.compute_v1, "DisksClient") as dc, patch.object(
+        gcpmod.compute_v1, "FirewallsClient"
+    ) as fc:
+        ic.return_value.list.return_value = []
+        dc.return_value.list.return_value = []
+        fc.return_value.get.side_effect = NotFound("x")
+        actions = prov.destroy([node], dry_run=True)
+    assert actions == []
+    assert ic.return_value.list.call_args.kwargs["request"].filter == "labels.fedlab-run = fedlearn"
+    ic.return_value.get.assert_not_called()
+
+
+def test_check_flags_a_name_that_belongs_to_another_run_and_accepts_one_of_its_own(cfg):
+    prov, node = _prov(cfg), cfg.resolved_nodes()[2]
+    for label, ok in (("fedasync-smoke", False), (None, False), ("fedlearn", True)):
+        with patch.object(gcpmod.compute_v1, "InstancesClient") as ic:
+            ic.return_value.get.return_value = _owned_by(label)
+            if ok:
+                assert "will be reused" in prov._name_is_free(node)
+            else:
+                with pytest.raises(RuntimeError, match="already exists and belongs to .*use a different name_prefix"):
+                    prov._name_is_free(node)
+    with patch.object(gcpmod.compute_v1, "InstancesClient") as ic:
+        ic.return_value.get.side_effect = NotFound("x")
+        assert prov._name_is_free(node) == "no instance of that name"
