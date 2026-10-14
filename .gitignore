@@ -7,3 +7,4 @@ config.yaml
 .pytest_cache/
 dist/
 results/
+.DS_Store
