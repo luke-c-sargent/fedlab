@@ -56,7 +56,7 @@ def drive(run, tmp: Path, code_root: Path, *, backend: str, rounds: int, run_set
         assert code == 0, err
         for node, site_file in sites.items():
             code, out, err = run("client", "--exchange", run_dir / "exchange", "--state-dir", tmp / f"state{node}",
-                                 "--site-file", site_file, "--app", "fedlab_compass.async_client:app")
+                                 "--site-file", site_file, "--client-factory", "fedlab_compass.neutral_client:make_client")
             assert code == 0 and "wrote" in out, (node, err)
         code, out, err = run("collect", run_dir)
         assert code == 0, (out, err)

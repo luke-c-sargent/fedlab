@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from fedlab import ssh
+from fedlab import remote, ssh
 from fedlab.remote import LocalHost, RemoteError, SshHost
 
 
@@ -58,6 +58,16 @@ def test_ssh_retries_a_connection_that_timed_out_before_the_command_started(monk
     monkeypatch.setattr("fedlab.remote.time.sleep", sleeps.append)
     assert host.run("true") == "ok\n"
     assert sleeps == [2, 4]  # backoff between attempts
+
+
+def test_ssh_does_not_retry_a_command_that_already_started(monkeypatch):
+    host = _ssh_host()
+    calls = []
+    dropped = f"{remote.STARTED}\nstarted run 1\nclient_loop: send disconnect: Connection reset by peer\n"
+    monkeypatch.setattr(host, "_exec_once", lambda s, o: calls.append(1) or (255, dropped))
+    monkeypatch.setattr("fedlab.remote.time.sleep", lambda s: None)
+    code, output = host.execute("flwr run")
+    assert len(calls) == 1 and code == 255 and remote.STARTED not in output
 
 
 def test_ssh_does_not_retry_real_failures(monkeypatch):

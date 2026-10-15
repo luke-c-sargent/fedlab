@@ -98,7 +98,7 @@ class FlowerModule(FLModule):
 
     def run(self, d: Deployment) -> str:
         host = d.server.host
-        fed = Federation(d, ENV_DIR)
+        fed = Federation(d, ENV_DIR, self.service_env(d, d.server))
         return fed.submit(f"{host.home}/{APP_DIR}", self.run_config(), on_line=lambda line: d.log(f"  {line}") if line.strip() else None)
 
     def collect(self, d: Deployment, dest: Path) -> list[Path]:

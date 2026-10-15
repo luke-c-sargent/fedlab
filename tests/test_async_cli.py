@@ -11,7 +11,7 @@ import yaml
 from fedlab_async.cli import app
 from fedlab_async.envelope import peek, read
 from fedlab_async.run import RunDir
-from test_async_plain import MomentumFedAvg, in_memory
+from test_async_strategy import MomentumFedAvg, in_memory
 
 
 @pytest.fixture
@@ -45,7 +45,7 @@ def plain_run(tmp_path, cli):
 
 def client_args(run, site, tmp_path):
     return ("client", "--exchange", run / "exchange", "--state-dir", tmp_path / f"state{site['n']}", "--site-file", site["file"],
-            "--plain", "test_async_plain:client_fn")
+            "--client", "test_async_strategy:client_fn")
 
 
 def drive_one_step(cli, run, sites, tmp_path, explicit_for=()):
@@ -70,13 +70,13 @@ def test_a_plain_run_through_the_cli_matches_an_in_memory_run(tmp_path, cli, pla
         rounds += 1
     state = pickle.loads((run / "private" / "state.pkl").read_bytes())
     reference = in_memory(8)
-    np.testing.assert_allclose(state.program.algorithm.w, reference.w)
+    np.testing.assert_allclose(state.program.strategy.w, reference.w)
     assert rounds == len(reference.rounds_seen)
 
 
 def test_status_follows_the_run(tmp_path, cli, plain_run):
     run, sites = plain_run
-    assert "round 1, round: not emitted yet" in cli("status", run)[1]
+    assert "round 1, train: not emitted yet" in cli("status", run)[1]
     cli("emit", run)
     out = cli("status", run)[1]
     assert "requests are out" in out and "waiting on: [1, 2, 3]" in out
@@ -122,11 +122,21 @@ def test_client_needs_exactly_one_kind_and_something_to_do(tmp_path, cli, plain_
     run, sites = plain_run
     common = ("client", "--exchange", run / "exchange", "--state-dir", tmp_path / "s", "--site-file", sites[1])
     assert "exactly one of --app" in cli(*common)[2]
-    out = cli(*common, "--plain", "test_async_plain:client_fn")[1]
+    out = cli(*common, "--client", "test_async_strategy:client_fn")[1]
     assert "nothing to do" in out  # nothing emitted yet
     cli("emit", run)
-    assert "wrote" in cli(*common, "--plain", "test_async_plain:client_fn")[1]
-    assert "nothing to do" in cli(*common, "--plain", "test_async_plain:client_fn")[1]  # now answered
+    assert "wrote" in cli(*common, "--client", "test_async_strategy:client_fn")[1]
+    assert "nothing to do" in cli(*common, "--client", "test_async_strategy:client_fn")[1]  # now answered
+
+
+def test_client_factory_gets_the_site_files_node_and_run_settings(tmp_path, cli, plain_run):
+    run, _ = plain_run
+    site = write(tmp_path / "site.yaml", {"node_id": 1, "node": {"x": 1}, "run": {"y": 2}})
+    cli("emit", run)
+    args = ("client", "--exchange", run / "exchange", "--state-dir", tmp_path / "s", "--site-file", site)
+    code, out, _ = cli(*args, "--client-factory", "cli_programs:client_factory")
+    assert code == 0 and "wrote" in out
+    assert cli(*args, "--client", "test_async_strategy:client_fn", "--client-factory", "cli_programs:client_factory")[0] == 1
 
 
 def test_a_client_refuses_an_older_request_with_a_clear_message(tmp_path, cli, plain_run):

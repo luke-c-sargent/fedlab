@@ -30,10 +30,10 @@ If a request file is lost or damaged in transit, `fedlab-async reissue run1` put
 
 ```sh
 uv run fedlab-async client --exchange exchange/ --state-dir ~/fedlab-state \
-    --site-file site.yaml --app fedlab_compass.async_client:app
+    --site-file site.yaml --client-factory fedlab_compass.neutral_client:make_client
 ```
 
-Without request files on the command line, `client` runs this node's pending requests (`node_id` in the site file). Running a request again is safe. A request older than the last one the node ran is refused. If the client fails, it writes no response and keeps its state. For plain functions, use `--plain package.module:function`.
+Without request files on the command line, `client` runs this node's pending requests (`node_id` in the site file). Running a request again is safe. A request older than the last one the node ran is refused. If the client fails, it writes no response and keeps its state. For a plain client function (`fedlab_core.ClientFn`), use `--client package.module:function`.
 
 Put the directories that hold the program and client classes on the import path with `--path DIR` (repeatable) or `FEDLAB_ASYNC_PATH` (separated by `:`).
 

@@ -62,7 +62,10 @@ def init(
     config: Path = typer.Option(..., "--config", "-c", help="YAML/JSON with `program: package.module:factory` and `options:`"),
     force: bool = typer.Option(False, "--force", help="Replace an existing run's state"),
 ):
-    """Create a run. The factory is called as factory(options: dict, run_dir: Path) and returns a Program."""
+    """Create a run. The factory is called as factory(options: dict, run_dir: Path); it returns a Program or a fedlab_core Strategy."""
+    from fedlab_core import Strategy
+
+    from .adapters.strategy import StrategyProgram
     from .server import Server
 
     spec = load_config(config)
@@ -72,6 +75,8 @@ def init(
     if run_dir.exists() and not force:
         raise RuntimeError(f"{run} already holds a run; use --force to replace it")
     program = load_object(spec["program"])(spec.get("options", {}), run_dir.root)
+    if isinstance(program, Strategy):
+        program = StrategyProgram(program)
     Server.create(run_dir.state, run_dir.exchange, program)
     status = run_dir.server().status()
     typer.echo(f"created run {status.run_id}")
@@ -137,11 +142,14 @@ def client(
     state_dir: Path = typer.Option(..., "--state-dir", help="This site's private state between requests"),
     site_file: Optional[Path] = typer.Option(None, "--site-file", "-s", help="YAML/JSON: node_id, node (node config), run (run config)"),
     app_spec: Optional[str] = typer.Option(None, "--app", help="Flower ClientApp as package.module:name"),
-    plain: Optional[str] = typer.Option(None, "--plain", help="Plain client function as package.module:name"),
+    client_fn: Optional[str] = typer.Option(None, "--client", help="Client function (fedlab_core ClientFn) as package.module:name"),
+    client_factory: Optional[str] = typer.Option(
+        None, "--client-factory", help="Function (node config, run config) -> ClientFn, as package.module:name; both come from --site-file"
+    ),
 ):
     """Run request files through this site's client and write the response files."""
-    if bool(app_spec) == bool(plain):
-        raise ValueError("give exactly one of --app (Flower ClientApp) or --plain (client function)")
+    if sum(map(bool, (app_spec, client_fn, client_factory))) != 1:
+        raise ValueError("give exactly one of --app (Flower ClientApp), --client (client function) or --client-factory")
     site = load_config(site_file) if site_file else {}
     ex = Exchange(exchange)
     todo = list(requests or [])
@@ -158,9 +166,10 @@ def client(
 
             out = run_client(request, load_object(app_spec), ex, state_dir, site.get("node", {}), site.get("run", {}))
         else:
-            from .adapters.plain import run_plain_client
+            from .adapters.strategy import run_strategy_client
 
-            out = run_plain_client(request, load_object(plain), ex, state_dir)
+            fn = load_object(client_fn) if client_fn else load_object(client_factory)(site.get("node", {}), site.get("run", {}))
+            out = run_strategy_client(request, fn, ex, state_dir)
         typer.echo(f"wrote {out}")
 
 

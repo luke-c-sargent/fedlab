@@ -28,6 +28,7 @@ TRANSIENT_SSH = (
     "kex_exchange_identification", "Connection reset by", "Connection closed by",
 )
 SSH_ATTEMPTS = 4
+STARTED = "__FEDLAB_STARTED__"  # the script's first line: once seen, the command ran, so it is never retried
 
 
 def is_transient_ssh_failure(returncode: int, output: str) -> bool:
@@ -134,7 +135,9 @@ class SshHost(Host):
         """Run a script, retrying with backoff when the SSH connection itself could not be made."""
         for attempt in range(1, SSH_ATTEMPTS + 1):
             code, output = self._exec_once(script, on_line)
-            if attempt == SSH_ATTEMPTS or not is_transient_ssh_failure(code, output):
+            started = f"{STARTED}\n" in output
+            output = output.replace(f"{STARTED}\n", "", 1)
+            if attempt == SSH_ATTEMPTS or started or not is_transient_ssh_failure(code, output):
                 return code, output
             time.sleep(2**attempt)
         raise AssertionError("unreachable")
@@ -145,12 +148,12 @@ class SshHost(Host):
             stderr=subprocess.STDOUT, text=True,
         )
         assert proc.stdin and proc.stdout
-        proc.stdin.write(script)
+        proc.stdin.write(f"echo {STARTED}\n{script}")
         proc.stdin.close()
         lines: list[str] = []
         for line in proc.stdout:
             lines.append(line)
-            if on_line:
+            if on_line and line.rstrip("\n") != STARTED:
                 on_line(line.rstrip("\n"))
         return proc.wait(), "".join(lines)
 

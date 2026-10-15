@@ -58,3 +58,20 @@ def test_smoke_module_lifecycle(tmp_path):
     assert result["arrays"] == [[3.0, 3.0, 3.0]]  # +1 per round, averaged over two clients
     assert result["train"]["3"]["calls"] == 3.0  # context.state survived across rounds
     assert any(p.name.endswith(".superlink.log") for p in files)
+
+
+def test_neutral_strategy_on_live_flower(tmp_path):
+    """A fedlab_core strategy through serve(): node-id mapping, payloads, and client state on real SuperNodes."""
+    cfg = Settings(module="strategy_smoke", module_options={"rounds": 3}, state_dir=tmp_path / ".fedlab")
+    d = _deployment(tmp_path, cfg, ["a", "b"])
+    module = get_module(cfg)
+    try:
+        module.stage(d)
+        module.start(d)
+        module.run(d)
+        module.collect(d, tmp_path / "out")
+    finally:
+        module.stop(d)
+    result = json.loads((tmp_path / "out" / "strategy-smoke" / "result.json").read_text())
+    assert result["w"] == [4.5, 4.5, 4.5]  # +mean(1, 2) = +1.5 per round, three rounds
+    assert result["calls"] == {"1": 3, "2": 3}  # each node's state survived across messages

@@ -10,6 +10,7 @@ if TYPE_CHECKING:
 # name -> "module.path:ClassName", imported on demand so unused modules cost nothing
 REGISTRY = {
     "smoke": "fedlab.modules.smoke.module:SmokeModule",
+    "strategy_smoke": "fedlab.modules.strategy_smoke.module:StrategySmokeModule",
     "compass_tcga_gtex": "fedlab.modules.compass_tcga_gtex.module:CompassTcgaGtexModule",
     "compass_tcga_gtex_async": "fedlab.modules.compass_tcga_gtex.async_module:CompassAsyncModule",
 }

@@ -9,12 +9,13 @@ Keep `private/` out of anything shared: the state file is pickled, so whoever ca
 
 from __future__ import annotations
 
-import importlib
 import json
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from fedlab_core.loader import load_object  # noqa: F401  (re-exported for the CLI)
 
 from .layout import Exchange
 from .server import Server
@@ -43,14 +44,6 @@ class RunDir:
         if not self.exists():
             raise FileNotFoundError(f"{self.root} is not a run (no private/state.pkl); create one with `init`")
         return Server(self.state, self.exchange)
-
-
-def load_object(spec: str) -> Any:
-    """`package.module:name` -> the object."""
-    module, _, name = spec.partition(":")
-    if not module or not name:
-        raise ValueError(f"expected 'package.module:name', got {spec!r}")
-    return getattr(importlib.import_module(module), name)
 
 
 def add_paths(paths: list[str]) -> None:

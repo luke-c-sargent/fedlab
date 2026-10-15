@@ -68,9 +68,10 @@ class FederationError(RuntimeError):
 
 
 class Federation:
-    def __init__(self, d: Deployment, env_dir: str = "fl"):
+    def __init__(self, d: Deployment, env_dir: str = "fl", server_env: dict[str, str] | None = None):
         self.d = d
         self.env_dir = env_dir
+        self.server_env = server_env or {}  # the server services' environment, so `flwr run` can import the app too
 
     # ---- paths and environment ------------------------------------------------
     def bin(self, host: Host) -> str:
@@ -160,7 +161,7 @@ class Federation:
     def _flwr(self, args: str, check: bool = True, on_line: Callable[[str], None] | None = None) -> tuple[int, str]:
         sh = self.d.server.host
         # Unbuffered: through an SSH pipe Python would otherwise hold lines back in an 8 KiB block.
-        code, out = sh.execute(f"flwr {args} 2>&1", env={**self.env(sh), "PYTHONUNBUFFERED": "1"}, on_line=on_line)
+        code, out = sh.execute(f"flwr {args} 2>&1", env={**self.env(sh, self.server_env), "PYTHONUNBUFFERED": "1"}, on_line=on_line)
         out = ANSI.sub("", out)
         if check and code != 0:
             raise FederationError(f"`flwr {args}` failed ({code}):\n{out[-2000:]}")
