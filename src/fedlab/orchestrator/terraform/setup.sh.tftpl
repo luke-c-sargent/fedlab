@@ -1,0 +1,90 @@
+#!/bin/bash
+set -euxo pipefail
+
+# Self-destruct: instance_initiated_shutdown_behavior=terminate turns this shutdown into a termination, so a
+# forgotten orchestrator cannot bill indefinitely. Extend a live one: sudo shutdown -c && sudo shutdown -h +120
+shutdown -h +${auto_terminate_min} "fedlab orchestrator auto-terminate"
+
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -qq
+apt-get install -y -qq docker.io nginx python3-venv curl
+systemctl enable --now docker
+
+mkdir -p /opt/orchestrator/apps /opt/orchestrator/requests
+chown ${ssh_user} /opt/orchestrator/apps   # fedlab uploads apps here
+
+# one certificate for every per-request SuperLink container (the image runs as uid 49999)
+mkdir -p /opt/flower/certs
+cat > /opt/flower/certs/ca.crt <<'EOF'
+${ca_pem}
+EOF
+cat > /opt/flower/certs/server.pem <<'EOF'
+${server_pem}
+EOF
+cat > /opt/flower/certs/server.key <<'EOF'
+${server_key}
+EOF
+chmod 600 /opt/flower/certs/server.key
+chown -R 49999:49999 /opt/flower
+
+# the flwr CLI registers SuperNode keys and submits runs against each SuperLink
+python3 -m venv /opt/orchestrator/venv
+/opt/orchestrator/venv/bin/pip install -q flwr==${flwr_version}
+docker pull flwr/superlink:${flwr_version}-py3.13-ubuntu24.04
+
+cat > /opt/orchestrator/service.py <<'EOF'
+${service_py}
+EOF
+
+# Edge proxy: the only thing listening publicly. Routes <request-id>.<domain> to that request's SuperLink (loopback;
+# the service rewrites sl-ports.map from its database) and forwards only the paths nodes and ServerApps use.
+# The access log records the bytes each request moved in each direction: fedlab reads it to report the traffic
+# the orchestrator handled, per request.
+echo '# no requests yet' > /etc/nginx/sl-ports.map
+cat > /etc/nginx/conf.d/superlinks.conf <<'EOF'
+map $ssl_server_name $sl_port {
+    default 0;
+    include /etc/nginx/sl-ports.map;
+}
+log_format fedlab '$time_iso8601 $ssl_server_name $request_method $uri $status $request_length $bytes_sent $request_time';
+server {
+    listen 443 ssl default_server;
+    ssl_certificate     /opt/flower/certs/server.pem;
+    ssl_certificate_key /opt/flower/certs/server.key;
+    access_log /var/log/nginx/fedlab.log fedlab;
+    client_max_body_size 0;
+    proxy_http_version 1.1;
+    proxy_request_buffering off;
+    proxy_buffering off;
+    proxy_read_timeout 900s;
+
+    location ~ ^/v1/(fleet|runtime)/ {
+        if ($sl_port = 0) { return 404; }
+        proxy_pass https://127.0.0.1:$sl_port;
+        proxy_ssl_verify on;
+        proxy_ssl_trusted_certificate /opt/flower/certs/ca.crt;
+        proxy_ssl_name localhost;
+    }
+    location / { return 403; }
+}
+EOF
+rm -f /etc/nginx/sites-enabled/default
+nginx -t
+systemctl enable --now nginx
+systemctl reload nginx
+
+cat > /etc/systemd/system/orchestrator.service <<'EOF'
+[Unit]
+Requires=docker.service
+After=docker.service nginx.service
+[Service]
+Environment=FLWR_VERSION=${flwr_version}
+Environment=ENDPOINT_DOMAIN=${endpoint_domain}
+ExecStart=/opt/orchestrator/venv/bin/python /opt/orchestrator/service.py
+Restart=always
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl daemon-reload
+systemctl enable --now orchestrator
+touch /var/tmp/orchestrator-ready

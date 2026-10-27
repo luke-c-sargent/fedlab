@@ -84,3 +84,18 @@ def test_a_failing_site_stops_the_run_with_its_own_output(tmp_path):
         module.run(d)
     assert "client failed on c2" in str(error.value) and "not the assigned file" in str(error.value)  # the site's own output
     assert not list((tmp_path / "srv" / "run" / "exchange" / "responses").glob("*-n2.res"))  # nothing from the failed site reached the server
+
+
+def test_a_run_records_transfers_and_host_metrics(tmp_path):
+    module, d, sites, _ = fleet(tmp_path)
+    module.stage(d)
+    module.start(d)
+    module.run(d)
+    module.collect(d, tmp_path / "out")
+    summary = json.loads((tmp_path / "out" / "metrics" / "summary.json").read_text())
+    assert set(summary["hosts"]) == {"srv", "c1", "c2"}
+    assert {"srv -> c1", "srv -> c2", "c1 -> srv", "c2 -> srv"} <= set(summary["transfers"])
+    assert all(t["bytes"] > 0 for t in summary["transfers"].values())
+    assert (tmp_path / "out" / "metrics" / "transfers.jsonl").exists()
+    steps = summary["async_steps"]
+    assert steps["steps"] >= 2 and set(steps["site_idle_s"]) == {"c1", "c2"} and all(v >= 0 for v in steps["site_idle_s"].values())

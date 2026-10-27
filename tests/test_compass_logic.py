@@ -42,3 +42,41 @@ def test_weighted_mean_is_the_weighted_average():
     mean = logic.weighted_mean([([np.full(3, 1.0, np.float32)], 3), ([np.full(3, 5.0, np.float32)], 1)])
     np.testing.assert_allclose(mean[0], 2.0)
     assert mean[0].dtype == np.float32
+
+
+def _git(repo, *args):
+    import subprocess
+
+    return subprocess.run(["git", "-C", str(repo), "-c", "user.email=t@t", "-c", "user.name=t", *args], check=True, capture_output=True, text=True).stdout.strip()
+
+
+def test_compass_commit_without_a_git_binary_matches_git(tmp_path, monkeypatch):
+    import types
+
+    from fedlab_compass import identity
+
+    def no_git(*args, **kwargs):
+        raise FileNotFoundError("git")
+
+    def without_git():  # only the module under test loses git; this test's own helper keeps it
+        return monkeypatch.context()
+
+    repo = tmp_path / "c"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    (repo / "f").write_text("x")
+    _git(repo, "add", "f")
+    _git(repo, "commit", "-q", "-m", "m")
+    want = _git(repo, "rev-parse", "HEAD")
+    assert identity.compass_commit(repo) == want  # on a branch
+    _git(repo, "checkout", "-q", "--detach")
+    assert identity.compass_commit(repo) == want  # detached, like the staged checkout
+    with without_git() as m:
+        m.setattr(identity, "subprocess", types.SimpleNamespace(run=no_git))
+        assert identity.compass_commit(repo) == want
+    _git(repo, "checkout", "-q", "-")
+    _git(repo, "pack-refs", "--all")
+    with without_git() as m:
+        m.setattr(identity, "subprocess", types.SimpleNamespace(run=no_git))
+        assert identity.compass_commit(repo) == want  # branch ref in packed-refs
+        assert identity.compass_commit(tmp_path) is None  # not a checkout

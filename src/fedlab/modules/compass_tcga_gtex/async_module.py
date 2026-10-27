@@ -17,6 +17,7 @@ can reach), so `fedlab prepare` is not needed.
 from __future__ import annotations
 
 import shutil
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Callable
@@ -26,13 +27,14 @@ import yaml
 import fedlab_core
 from fedlab_async.assets import measure
 
+from ... import metrics
 from ...config import Node
 from ..base import Deployment, Site
 from ..flower_module import ENV_DIR
 from .module import CODE_DIR, NODE_IDS, PYLIB, SITES, SOURCE_DIR, CompassTcgaGtexModule
 
 RUN_DIR = "run"  # the server's run directory
-STUB_REQUIREMENTS = "flwr==1.40.0\nnumpy>=1.26,<2\npandas==1.5.3\n"  # the real prepare scripts still run
+STUB_REQUIREMENTS = "flwr==1.42.0\nnumpy>=1.26,<2\npandas==2.3.3\n"  # the real prepare scripts still run
 EXTRA_REQUIREMENTS = "typer\npyyaml\n"  # for the fedlab-async commands
 ASYNC_PACKAGE = Path(__file__).resolve().parents[3] / "fedlab_async"
 CORE_PACKAGE = Path(fedlab_core.__file__).parent
@@ -75,6 +77,7 @@ class CompassAsyncModule(CompassTcgaGtexModule):
         return base + EXTRA_REQUIREMENTS
 
     def stage(self, d: Deployment) -> None:
+        metrics.start(d)
         with ThreadPoolExecutor() as pool:
             list(pool.map(lambda site: self._stage_node(d, site), d.sites))
 
@@ -153,29 +156,54 @@ class CompassAsyncModule(CompassTcgaGtexModule):
         shutil.rmtree(scratch, ignore_errors=True)
         scratch.mkdir(parents=True)
         step = 0
+        metrics.mark(d, "run_start")
         while "finished" not in self._command(server, f"status {run}")[1]:
             step += 1
             d.log(f"step {step}: emit")
-            requests = [Path(line.strip()) for line in self._command(server, f"emit {run}")[1].splitlines() if line.strip().endswith(".req")]
+            t_emit = time.time()
+            emitted = self._command(server, f"emit {run}")[1]
+            emit_seconds = time.time() - t_emit
+            requests = [Path(line.strip()) for line in emitted.splitlines() if line.strip().endswith(".req")]
             for site in d.clients:  # the server's request files go to the sites they are for
                 for request in (r for r in requests if r.name.endswith(f"-n{NODE_IDS[site.node.site]}.req")):
+                    started = time.time()
                     server.host.get(str(request), scratch / "requests")
                     site.host.put(scratch / "requests" / request.name, f"{site.host.home}/exchange/requests/{request.name}")
+                    self._ledger(d, step, "request", scratch / "requests" / request.name, started, server, site)
             d.log(f"step {step}: {len(d.clients)} site(s) run their requests")
+            site_seconds: dict[str, float] = {}
+
+            def timed(site: Site) -> str:
+                started = time.time()
+                try:
+                    return self._run_client(d, site)
+                finally:
+                    site_seconds[site.node.name] = round(time.time() - started, 3)
+
             with ThreadPoolExecutor() as pool:
-                outputs = list(pool.map(lambda site: self._run_client(d, site), d.clients))
+                outputs = list(pool.map(timed, d.clients))
             for site, output in zip(d.clients, outputs):  # the response files come back to the server
                 for line in output.splitlines():
                     if line.startswith("wrote "):
                         name = Path(line.split(" ", 1)[1].strip()).name
+                        started = time.time()
                         site.host.get(f"{site.host.home}/exchange/responses/{name}", scratch / "responses" / site.node.site)
                         server.host.put(scratch / "responses" / site.node.site / name, f"{run}/exchange/responses/{name}")
+                        self._ledger(d, step, "response", scratch / "responses" / site.node.site / name, started, site, server)
+            t_collect = time.time()
             code, output = self._command(server, f"collect {run}", check=False)
+            metrics.step(d, step, emit=emit_seconds, collect=time.time() - t_collect, sites=site_seconds)
             for line in output.splitlines():
                 d.log(f"  {line}")
             if code:
                 raise RuntimeError(f"step {step}: the server could not advance:\n{output.strip()}")
+        metrics.mark(d, "run_end")
         return self._command(server, f"status {run}")[1].split()[1]
+
+    @staticmethod
+    def _ledger(d: Deployment, step: int, direction: str, local: Path, started: float, src: Site, dst: Site) -> None:
+        metrics.transfer(d, step=step, direction=direction, name=local.name, nbytes=local.stat().st_size,
+                         seconds=time.time() - started, src=src.node.name, dst=dst.node.name)
 
     def _run_client(self, d: Deployment, site: Site) -> str:
         home = site.host.home
@@ -189,6 +217,7 @@ class CompassAsyncModule(CompassTcgaGtexModule):
         run = f"{server.host.home}/{RUN_DIR}"
         server.host.mkdir(f"{run}/results")
         server.host.get(f"{run}/results", dest)
+        metrics.collect(d, dest)
         audit = f"{run}/private/state.pkl.audit.jsonl"
         if server.host.execute(f"test -f {audit}")[0] == 0:
             server.host.get(audit, dest)

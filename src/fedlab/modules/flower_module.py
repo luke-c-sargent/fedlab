@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
+import json
 import re
 from abc import abstractmethod
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Callable
 
-from ..flower.federation import Federation
+from .. import metrics
+from ..flower.federation import FLEET_PORT, Federation
+from ..flower.orchestrated import EXEC, NODE, OrchestratedFederation
 from .base import Deployment, FLModule, Site
 
-PYTHON_VERSION = "3.11"  # Flower 1.40 needs >= 3.11
+PYTHON_VERSION = "3.12"  # Flower 1.42 needs >= 3.11; 3.12 matches the orchestrated image
 ENV_DIR = "fl"  # virtualenv at ~/fl on every node
 APP_DIR = "app"  # the Flower app on the server at ~/app
 RESULTS_DIR = "results"  # service-owned output root on the server at ~/results
@@ -68,13 +71,22 @@ class FlowerModule(FLModule):
 
     # ---- lifecycle -------------------------------------------------------------------
     def stage(self, d: Deployment) -> None:
+        metrics.start(d)  # from the start, so installs and uploads are measured too
         with ThreadPoolExecutor() as pool:  # nodes install and upload independently
             list(pool.map(lambda site: self._stage_site(d, site), d.sites))
-        d.log("stage server: Flower app")
-        d.server.host.put(self.app_path, f"{d.server.host.home}/{APP_DIR}")
+        if not self.orchestrated:  # orchestrated runs upload the app to the orchestrator when they start
+            d.log("stage server: Flower app")
+            d.server.host.put(self.app_path, f"{d.server.host.home}/{APP_DIR}")
+
+    @property
+    def orchestrated(self) -> bool:
+        return self.cfg.federation == "orchestrated"
 
     def _stage_site(self, d: Deployment, site: Site) -> None:
-        self.install_environment(d, site, self.requirements)
+        if self.orchestrated:
+            OrchestratedFederation(d, d.orchestrator).prepare_node(site)  # the image replaces the virtualenv
+        else:
+            self.install_environment(d, site, self.requirements)
         d.log(f"stage {site.node.name}: module files")
         self.stage_site(d, site)
 
@@ -89,28 +101,58 @@ class FlowerModule(FLModule):
         host.run(
             "command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 sh\n"
             f"test -x {host.home}/{ENV_DIR}/bin/python || uv venv --python {PYTHON_VERSION} {host.home}/{ENV_DIR}\n"
-            f"uv pip install --python {host.home}/{ENV_DIR}/bin/python -r {host.home}/requirements.txt",
+            # best-match across indexes: numpy etc. also exist on the PyTorch index, only torch's "+cuXXX" builds must come from it
+            f"UV_INDEX_STRATEGY=unsafe-best-match uv pip install --python {host.home}/{ENV_DIR}/bin/python -r {host.home}/requirements.txt\n"
+            # as in the image: Triton would need a C compiler on first use, and nothing here uses torch.compile
+            f"uv pip uninstall --python {host.home}/{ENV_DIR}/bin/python triton || true",
             on_line=quiet_packages(lambda line: d.log(f"  {name}: {line}")),
         )
 
     def start(self, d: Deployment) -> None:
+        if self.orchestrated:
+            OrchestratedFederation(d, d.orchestrator).start(self.node_config, lambda site: self.service_env(d, site))
+            return
         Federation(d, ENV_DIR).start(self.node_config, lambda site: self.service_env(d, site))
+        address = getattr(d.server.host, "address", None)  # LocalHost has none
+        if address:
+            metrics.probe_rtt(d, address, FLEET_PORT)
 
     def run(self, d: Deployment) -> str:
         host = d.server.host
-        fed = Federation(d, ENV_DIR, self.service_env(d, d.server))
-        return fed.submit(f"{host.home}/{APP_DIR}", self.run_config(), on_line=lambda line: d.log(f"  {line}") if line.strip() else None)
+        metrics.mark(d, "run_start")
+        try:
+            if self.orchestrated:
+                return OrchestratedFederation(d, d.orchestrator).submit(self.app_path, self.run_config(), on_line=lambda line: d.log(f"  {line}") if line.strip() else None)
+            fed = Federation(d, ENV_DIR, self.service_env(d, d.server))
+            return fed.submit(f"{host.home}/{APP_DIR}", self.run_config(), on_line=lambda line: d.log(f"  {line}") if line.strip() else None)
+        finally:
+            metrics.mark(d, "run_end")
 
     def collect(self, d: Deployment, dest: Path) -> list[Path]:
         host = d.server.host
         host.mkdir(f"{host.home}/{RESULTS_DIR}")
         host.get(f"{host.home}/{RESULTS_DIR}", dest)
+        if self.orchestrated:
+            fed = OrchestratedFederation(d, d.orchestrator)
+            for site in d.clients:
+                (dest / f"{site.node.name}.supernode.log").write_text(fed.logs(site, NODE))
+            (dest / f"{d.server.node.name}.superexec.log").write_text(fed.logs(d.server, EXEC))
+            metrics.collect(d, dest)
+            summary_file = dest / "metrics" / "summary.json"
+            summary = json.loads(summary_file.read_text())
+            summary["orchestrator_traffic"] = d.orchestrator.traffic(dest / "metrics")  # what the orchestrator moved, per request
+            summary_file.write_text(json.dumps(summary, indent=2))
+            return sorted(p for p in dest.rglob("*") if p.is_file())
         # client logs help when a run misbehaves
         for site in d.clients:
             logs = site.host.service_log("supernode", 400)
             (dest / f"{site.node.name}.supernode.log").write_text(logs)
         (dest / f"{d.server.node.name}.superlink.log").write_text(host.service_log("superlink", 400))
+        metrics.collect(d, dest)
         return sorted(p for p in dest.rglob("*") if p.is_file())
 
     def stop(self, d: Deployment) -> None:
-        Federation(d, ENV_DIR).stop()
+        if self.orchestrated:
+            OrchestratedFederation(d, d.orchestrator).stop()
+        else:
+            Federation(d, ENV_DIR).stop()

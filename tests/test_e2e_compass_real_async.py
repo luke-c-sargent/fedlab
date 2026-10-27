@@ -8,7 +8,7 @@ Opt-in, like tests/test_e2e_compass_real.py (read its docstring for the environm
 environment (`pip install typer pyyaml`), because the CLI needs them and the module's requirements.txt does not list them:
 
     FEDLAB_E2E_REAL=1 \\
-    FEDLAB_REAL_ENV=/path/to/venv          # the module's requirements.txt installed (python 3.11) + typer pyyaml
+    FEDLAB_REAL_ENV=/path/to/venv          # the module's requirements.txt installed (python 3.12) + typer pyyaml
     FEDLAB_COMPASS_CLONE=/path/to/COMPASS  # github.com/mims-harvard/COMPASS at the pinned commit
     FEDLAB_REPO=/path/to/federated-learning-model
     [FEDLAB_COMPARE_ROUNDS=/path/to/rounds.json]   # rounds.json of a live run on the same data, to compare losses

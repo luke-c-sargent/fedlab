@@ -8,6 +8,9 @@ gcp_machine_type: n2-standard-4   # 4 vCPU / 16 GB
 disk_gb: 200
 ports: [22, 8000]                 # opened to 0.0.0.0/0 on the server only (8000 = SuperLink HTTP API; clients open only 22)
 warn_after_days: 3                # `status` warns when a node has been running this long
+# federation: direct              # direct (default): the server VM runs the SuperLink. orchestrated: see docs/orchestrated-runs.md
+# orchestrator_region: us-west-2  # orchestrated only: where `fedlab orchestrator up` makes its VM (AWS)
+# orchestrator_auto_terminate_hours: 4
 
 # Exactly one node must have role: server. Each client needs a `site` (the data it holds; the COMPASS module wants tcga and gtex).
 nodes:

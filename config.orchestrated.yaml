@@ -1,0 +1,23 @@
+# The real COMPASS run through the orchestrator: GPU clients on AWS and GCP, the ServerApp on a CPU node.
+# Run `fedlab prepare -c config.orchestrated.yaml` once, then `fedlab experiment -c config.orchestrated.yaml --yes`.
+# The experiment creates the orchestrator and the fleet, and removes both.
+run_name: fedorch
+name_prefix: fedorch
+federation: orchestrated
+state_dir: .fedlab/orchestrated
+disk_gb: 150                      # the image is ~9 GB with its layers; the prepared data is a few GB
+ports: [22]                       # nodes only dial out to the orchestrator on 443
+orchestrator_region: us-west-2
+nodes:
+  - {role: server, provider: aws, location: us-west-2, machine_type: m5.large}
+  - {role: client, site: tcga, provider: aws, location: us-west-2, machine_type: g5.xlarge, gpu: true}
+  - {role: client, site: gtex, provider: gcp, location: us-central1-a, machine_type: g2-standard-4, gpu: true, fallback_locations: [us-central1-b, us-central1-c]}
+module: compass_tcga_gtex
+module_options:
+  compass_repo: ~/code/federated-learning-model
+  tcga_tsv: ~/data/tcga_compass_tpm.tsv
+  gtex_tsv: ~/data/gtex_compass_tpm.tsv
+  prepared_root: .fedlab/compass/prepared
+  backend: compass
+  rounds: 2
+  micro_batch_size: 32

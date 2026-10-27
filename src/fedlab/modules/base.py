@@ -5,7 +5,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, ClassVar
+from typing import Any, Callable, ClassVar
 
 from ..config import Node, Settings
 from ..remote import Host
@@ -28,6 +28,8 @@ class Deployment:
     clients: list[Site]
     state_dir: Path  # local scratch for this deployment (certificates, ...)
     log: Callable[[str], None] = field(default=print)
+    observers: list[Site] = field(default_factory=list)  # measured like nodes, but not part of the federation
+    orchestrator: Any = None  # the Orchestrator, when cfg.federation is "orchestrated"
 
     @property
     def sites(self) -> list[Site]:

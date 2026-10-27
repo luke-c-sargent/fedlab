@@ -1,9 +1,9 @@
 """The real COMPASS training path (torch, COMPASS source, prep scripts) on synthetic data, on CPU.
 
-Opt-in: it needs a prepared Python 3.11 environment and two git checkouts, and takes ~10 minutes.
+Opt-in: it needs a prepared Python 3.12 environment and two git checkouts, and takes ~10 minutes.
 
     FEDLAB_E2E_REAL=1 \\
-    FEDLAB_REAL_ENV=/path/to/venv          # the module's requirements.txt installed (python 3.11)
+    FEDLAB_REAL_ENV=/path/to/venv          # the module's requirements.txt installed (python 3.12)
     FEDLAB_COMPASS_CLONE=/path/to/COMPASS  # github.com/mims-harvard/COMPASS at the pinned commit
     FEDLAB_REPO=/path/to/federated-learning-model
     uv run pytest tests/test_e2e_compass_real.py -s

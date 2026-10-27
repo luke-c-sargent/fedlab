@@ -177,7 +177,10 @@ Run each command with `uv run fedlab <command>`.
 | `run` | Run the deployed experiment to completion. |
 | `collect` | Copy the results and service logs to `results/<run_name>/<timestamp>/`. Use `--out` to choose the directory, or set `results_dir` in the config. |
 | `logs <node> [superlink\|supernode]` | Show the Flower service log of a node. `--lines` sets the length. |
-| `experiment` | `up`, `deploy`, `run`, `collect`, `destroy`. |
+| `experiment` | `up`, `deploy`, `run`, `collect`, `destroy`. With `federation: orchestrated` it also makes and removes the orchestrator. |
+| `orchestrator up\|down\|status` | Make, remove, or show the orchestrator VM for orchestrated runs. |
+| `report` | Compare runs: a table (CSV, JSON, markdown) and a chart page built from each run's metrics. |
+| `build-image` | Build the node images for `linux/amd64` and push them to quay.io. |
 | `status`, `ping` | Show node states and IPs. Test SSH login on each node. |
 | `start`, `stop` | Start or stop VMs. Stopped VMs still pay for their disks. |
 | `ssh <node> [command]` | Open SSH to a node with the repo key. |
@@ -189,6 +192,8 @@ Run each command with `uv run fedlab <command>`.
 
 - [The COMPASS module](docs/compass-module.md): options, data preparation, results, differences from the original scripts
 - [File-based runs](docs/file-based-runs.md): `fedlab-async` server and site commands, the COMPASS example, running it on a fleet
+- [Orchestrated runs](docs/orchestrated-runs.md): one SuperLink for each request on a separate orchestrator, nodes that only dial out, the node images
+- [Metrics](docs/metrics.md): what every run records on every host
 - [Add a module](docs/add-a-module.md): the `FLModule` interface
 - [Operations](docs/operations.md): Flower deployment, local files, GPUs, ports and security, teardown
 - [Tests](docs/testing.md)

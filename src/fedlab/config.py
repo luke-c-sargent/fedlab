@@ -90,6 +90,12 @@ class Settings(BaseSettings):
     module: str | None = None  # federated-learning module to deploy; see `fedlab modules`
     module_options: dict[str, Any] = Field(default_factory=dict)  # passed to the module
     results_dir: Path = Path("results")
+    federation: Literal["direct", "orchestrated"] = "direct"  # direct: the server VM runs the SuperLink; orchestrated: `fedlab orchestrator`
+    image_cpu: str = "quay.io/sargentl/fedlab-compass@sha256:83644cf0ee42826f98a44eb3135753a26650e3d4ac400f37f39edf5396e29a45"
+    image_gpu: str = "quay.io/sargentl/fedlab-compass@sha256:8eb6e0d1baeb7063163aa56f088ce3ee02916d387e2c4ea660c188fcff5e80e6"
+    orchestrator_region: str = "us-west-2"  # where `fedlab orchestrator up` creates the VM (AWS only)
+    orchestrator_instance_type: str = "t3.medium"
+    orchestrator_auto_terminate_hours: int = 4  # the VM terminates itself after this long
 
     @field_validator("run_name", "name_prefix")
     @classmethod

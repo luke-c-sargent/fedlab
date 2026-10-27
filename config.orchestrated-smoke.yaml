@@ -1,0 +1,17 @@
+# A cheap orchestrated run: the stub backend on CPU nodes, to test the cloud plumbing (orchestrator, images, metrics).
+# `fedlab experiment -c config.orchestrated-smoke.yaml --yes` creates the orchestrator and the fleet, and removes both.
+run_name: fedorch
+name_prefix: fedorch
+federation: orchestrated
+state_dir: .fedlab/orchestrated-smoke
+disk_gb: 50
+ports: [22]                       # nodes only dial out to the orchestrator on 443
+orchestrator_region: us-west-2
+nodes:
+  - {role: server, provider: aws, location: us-west-2, machine_type: m5.large}
+  - {role: client, site: tcga, provider: aws, location: us-west-2, machine_type: m5.xlarge}
+  - {role: client, site: gtex, provider: gcp, location: us-central1-a, machine_type: n2-standard-4, fallback_locations: [us-central1-b, us-central1-c]}
+module: compass_tcga_gtex
+module_options:
+  backend: stub
+  rounds: 2

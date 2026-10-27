@@ -1,0 +1,21 @@
+# One of three configs with the same nodes and settings, to compare the execution styles (see docs/metrics.md):
+#   config.matrix-direct.yaml (Flower, SuperLink on the server VM), config.matrix-async.yaml (file-based),
+#   config.orchestrated.yaml (Flower through the orchestrator).
+run_name: fedmx-async
+name_prefix: fedmx-async
+state_dir: .fedlab/matrix-async
+disk_gb: 150
+ports: [22]
+nodes:
+  - {role: server, provider: aws, location: us-west-2, machine_type: m5.large}
+  - {role: client, site: tcga, provider: aws, location: us-west-2, machine_type: g5.xlarge, gpu: true}
+  - {role: client, site: gtex, provider: gcp, location: us-central1-a, machine_type: g2-standard-4, gpu: true, fallback_locations: [us-central1-b, us-central1-c, us-central1-f, us-east1-b, us-east1-c, us-east1-d]}
+module: compass_tcga_gtex_async
+module_options:
+  compass_repo: ~/code/federated-learning-model
+  tcga_tsv: ~/data/tcga_compass_tpm.tsv
+  gtex_tsv: ~/data/gtex_compass_tpm.tsv
+  prepared_root: .fedlab/compass/prepared
+  backend: compass
+  rounds: 2
+  micro_batch_size: 32

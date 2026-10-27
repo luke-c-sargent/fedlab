@@ -32,8 +32,29 @@ def tree_digest(root: Path) -> str:
 
 
 def compass_commit(source: Path) -> str | None:
-    done = subprocess.run(["git", "-C", str(source), "rev-parse", "HEAD"], capture_output=True, text=True)
-    return done.stdout.strip() if done.returncode == 0 else None
+    try:
+        done = subprocess.run(["git", "-C", str(source), "rev-parse", "HEAD"], capture_output=True, text=True)
+        return done.stdout.strip() if done.returncode == 0 else None
+    except FileNotFoundError:  # no git binary (the node image has none): read the checkout's HEAD instead
+        return _head_from_files(Path(source) / ".git")
+
+
+def _head_from_files(git_dir: Path) -> str | None:
+    """HEAD's commit read from the files: a detached HEAD holds the hash; a branch HEAD names a ref (loose or packed)."""
+    try:
+        head = (git_dir / "HEAD").read_text().strip()
+        if not head.startswith("ref: "):
+            return head if len(head) == 40 else None
+        ref = head[5:]
+        loose = git_dir / ref
+        if loose.is_file():
+            return loose.read_text().strip()
+        for line in (git_dir / "packed-refs").read_text().splitlines():
+            if line.endswith(" " + ref) and not line.startswith(("#", "^")):
+                return line.split()[0]
+    except OSError:
+        pass
+    return None
 
 
 def code_identity(code_root: Path, compass_source: Path | None = None) -> dict:

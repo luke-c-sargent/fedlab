@@ -62,7 +62,7 @@ class _RecordingGrid(Grid):
 
     def __init__(self, node_ids: list[int], run_id: int):
         self._node_ids, self._run_id = node_ids, run_id
-        # Flower 1.40 builds a Message's sender from process-wide state; build_request rewrites the metadata anyway
+        # Flower 1.40+ builds a Message's sender from process-wide state; build_request rewrites the metadata anyway
         TaskIdentity.run_id, TaskIdentity.node_id, TaskIdentity.task_id = run_id, 0, 0
 
     def set_run(self, run) -> None:

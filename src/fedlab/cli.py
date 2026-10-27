@@ -16,8 +16,9 @@ from rich.markup import escape
 from rich.console import Console
 from rich.table import Table
 
-from . import ssh as sshmod
+from . import images, metrics, report as reportmod, ssh as sshmod
 from .config import Node, Settings, load_settings
+from .orchestrator import Orchestrator
 from .modules import REGISTRY, Deployment, FLModule, Site, get_module, module_class
 from .providers import NodeInfo, Provider, get_provider
 from .flower.federation import FederationError
@@ -347,7 +348,15 @@ def _deployment(ctx: Ctx) -> Deployment:
         sites.append(Site(n, SshHost(n.name, info.public_ip, ctx.cfg.ssh_user, ctx.key)))
     server = next(s for s in sites if s.node.role == "server")
     clients = [s for s in sites if s.node.role == "client"]
-    return Deployment(ctx.cfg, server, clients, ctx.cfg.state_dir / "deploy", log=_log)
+    d = Deployment(ctx.cfg, server, clients, ctx.cfg.state_dir / "deploy", log=_log)
+    if ctx.cfg.federation == "orchestrated":
+        orch = Orchestrator(ctx.cfg, ctx.key)
+        try:
+            d.observers = [Site(orch.node, orch.host())]
+        except RuntimeError as e:  # no outputs: the orchestrator is not up
+            raise typer.BadParameter(str(e))
+        d.orchestrator = orch
+    return d
 
 
 def _wait_ready(d: Deployment) -> None:
@@ -360,6 +369,67 @@ def _collect(ctx: Ctx, module: FLModule, d: Deployment, out: Optional[Path] = No
     files = module.collect(d, dest)
     console.print(f"[green]Collected {len(files)} file(s)[/] into {dest}")
     return dest
+
+
+orchestrator_app = typer.Typer(no_args_is_help=True, help="The orchestrator VM that runs one SuperLink per request (for `federation: orchestrated`).")
+app.add_typer(orchestrator_app, name="orchestrator")
+
+
+@orchestrator_app.command("up")
+def orchestrator_up(config: Optional[Path] = ConfigOpt):
+    """Create the orchestrator (a VM, an address and a CA) and wait until it serves."""
+    ctx = Ctx(config)
+    out = Orchestrator(ctx.cfg, ctx.key).up(_log)
+    console.print(f"[green]Orchestrator up[/] at {out['ip']} ({out['endpoint_domain']}). It terminates itself in {ctx.cfg.orchestrator_auto_terminate_hours} h; `fedlab orchestrator down` removes it sooner.")
+
+
+@orchestrator_app.command("down")
+def orchestrator_down(config: Optional[Path] = ConfigOpt):
+    """Destroy the orchestrator and everything Terraform made for it."""
+    ctx = Ctx(config)
+    Orchestrator(ctx.cfg, ctx.key).down(_log)
+    console.print("[green]Orchestrator destroyed.[/]")
+
+
+@orchestrator_app.command("status")
+def orchestrator_status(config: Optional[Path] = ConfigOpt):
+    """Show the orchestrator's address and the requests it holds."""
+    ctx = Ctx(config)
+    orch = Orchestrator(ctx.cfg, ctx.key)
+    console.print(f"address {orch.outputs['ip']}, domain {orch.outputs['endpoint_domain']}")
+    host = orch.host()
+    rows = host.run("python3 -c \"import sqlite3; print(sqlite3.connect('/opt/orchestrator/requests.db').execute('select id, port from requests').fetchall())\"", check=False)
+    console.print(f"requests (id, port): {rows.strip() or 'none'}")
+
+
+@app.command()
+def report(
+    runs: Optional[list[Path]] = typer.Argument(None, help="Result directories (default: ./results)"),
+    out: Path = typer.Option(Path("results/comparison"), "--out", "-o", help="Where to write comparison.csv/json/md/html"),
+):
+    """Compare runs side by side: a table and a chart page built from each run's metrics."""
+    dirs = reportmod.find_runs(runs or [Path("results")])
+    rows = [r for r in (reportmod.extract(d) for d in dirs) if r]
+    if not rows:
+        raise typer.BadParameter("no runs with metrics found")
+    for f in reportmod.write(rows, out):
+        console.print(f"[green]wrote[/] {f}")
+
+
+@app.command(name="build-image")
+def build_image(
+    flavor: list[str] = typer.Option(["cpu", "cu126"], "--flavor", "-f", help="cpu and/or cu126 (repeat for both)"),
+    repo: str = typer.Option(images.REPO, help="Registry repository to push to (log in first: docker login quay.io)"),
+    keep_cache: bool = typer.Option(False, "--keep-cache", help="Keep the build cache afterwards"),
+):
+    """Build the node images for linux/amd64 and push them. Prints each image's pinned digest."""
+    images.create_builder()
+    try:
+        for f in flavor:
+            console.print(f"[green]{images.build(f, repo, _log)}[/]")
+    finally:
+        if not keep_cache:
+            images.remove_builder()
 
 
 @app.command()
@@ -452,16 +522,29 @@ def experiment(
         raise typer.Abort()
     d: Deployment | None = None
     collected = False
+    deploy_dir = ctx.cfg.state_dir / "deploy"
+    metrics.reset(deploy_dir)
+    orch = Orchestrator(ctx.cfg, ctx.key)
+    made_orchestrator = False
     try:
+        if ctx.cfg.federation == "orchestrated" and not orch.outputs_file.exists():
+            _phase(0, 6, "create the orchestrator")
+            with metrics.phase(deploy_dir, "orchestrator_up"):
+                orch.up(_log)
+            made_orchestrator = True
         _phase(1, 6, "create the VMs and wait for SSH")
-        _up(ctx)
+        with metrics.phase(deploy_dir, "up"):
+            _up(ctx)
         d = _deployment(ctx)
         _phase(2, 6, "wait for first boot (cloud-init, GPU driver)")
-        _wait_ready(d)
+        with metrics.phase(deploy_dir, "first_boot"):
+            _wait_ready(d)
         _phase(3, 6, "install software and data")
-        module.stage(d)
+        with metrics.phase(deploy_dir, "stage"):
+            module.stage(d)
         _phase(4, 6, "start the federation")
-        module.start(d)
+        with metrics.phase(deploy_dir, "start"):
+            module.start(d)
         _phase(5, 6, "run the experiment")
         module.run(d)
         _phase(6, 6, "collect results")
@@ -480,16 +563,24 @@ def experiment(
                 module.stop(d)
             except Exception:
                 pass
+    # An orchestrator that this command made goes away with the fleet; one that was already up is left alone.
+    teardown_orchestrator = made_orchestrator and (collected and not keep or not collected and destroy_on_failure)
     if not collected:
         if destroy_on_failure:
             _destroy(ctx, yes=True)
+            if teardown_orchestrator:
+                orch.down(_log)
         else:
             console.print("[yellow]The fleet is still running (billing). Debug with `fedlab logs`, then `fedlab destroy`.[/]")
         raise typer.Exit(1)
     if keep:
         console.print("[yellow]--keep: fleet left running. `fedlab destroy` when done.[/]")
+        if made_orchestrator:
+            console.print("[yellow]The orchestrator is also left running. `fedlab orchestrator down` when done.[/]")
     else:
         _destroy(ctx, yes=True)
+        if teardown_orchestrator:
+            orch.down(_log)
 
 
 if __name__ == "__main__":

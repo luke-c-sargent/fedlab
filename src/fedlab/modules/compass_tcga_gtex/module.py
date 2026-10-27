@@ -12,6 +12,7 @@ import fedlab_core
 
 from ...config import Node
 from ..base import Deployment, Site
+from ...flower.orchestrated import OrchestratedFederation
 from ..flower_module import APP_DIR, ENV_DIR, FlowerModule
 
 HERE = Path(__file__).parent
@@ -182,9 +183,11 @@ class CompassTcgaGtexModule(FlowerModule):
         which = site.node.site if site.node.role == "client" else "server"
         env = self.service_env(d, site)
         d.log(f"stage {name}: verifying prepared data")
-        out = host.run(
-            f"cd {home}/{APP_DIR} && PYTHONPATH={home}/{APP_DIR} {home}/{ENV_DIR}/bin/python -m fedlab_compass.verify "
-            f"--site {which} --seed {self.opt['seed']}",
-            env=env,
-        )
+        verify = f"-m fedlab_compass.verify --site {which} --seed {self.opt['seed']}"
+        if self.orchestrated:  # there is no virtualenv on the node: run it in the image
+            out = OrchestratedFederation(d, d.orchestrator).run_in_image(
+                site, f"python {verify}", {**env, "PYTHONPATH": f"{home}/{APP_DIR}:{env.get('PYTHONPATH', '')}"}, f"{home}/{APP_DIR}"
+            )
+        else:
+            out = host.run(f"cd {home}/{APP_DIR} && PYTHONPATH={home}/{APP_DIR} {home}/{ENV_DIR}/bin/python {verify}", env=env)
         d.log(f"  {name}: {out.strip().splitlines()[-1]}")

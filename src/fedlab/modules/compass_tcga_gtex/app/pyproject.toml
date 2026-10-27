@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "fedlab-compass"
 version = "0.1.0"
-dependencies = ["flwr==1.40.0", "numpy>=1.26,<2"]
+dependencies = ["flwr==1.42.0", "numpy>=1.26"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["fedlab_compass"]

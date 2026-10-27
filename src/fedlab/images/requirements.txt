@@ -1,0 +1,16 @@
+# The COMPASS toolchain for Python 3.12, pinned from an environment that ran the original scripts end to end
+# (tests/test_e2e_compass_real_async.py, 3 rounds on CPU). torch and torchvision are installed separately from the
+# PyTorch index, so one list serves the CPU and CUDA images.
+numpy==2.5.4
+pandas==2.3.3          # <3: COMPASS's projector calls Series._append, removed in pandas 3
+scikit-learn==1.9.1
+einops==0.8.2
+matplotlib==3.8.4      # <3.9: COMPASS calls matplotlib.cm.get_cmap, removed in 3.9
+seaborn==0.13.2
+tqdm==4.70.1
+joblib==1.6.0
+wandb==0.31.0
+openpyxl==3.1.5
+umap-learn==0.5.12
+plotly==7.1.0
+gdown==6.4.2
