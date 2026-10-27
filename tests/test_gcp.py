@@ -76,7 +76,7 @@ def test_server_firewall_opens_flower_ports(cfg):
         fc.return_value.get.side_effect = NotFound("x")
         prov._ensure_firewall("server")
     fw = fc.return_value.insert.call_args.kwargs["firewall_resource"]
-    assert fw.name == "fedlearn-server" and list(fw.allowed[0].ports) == ["22", "9092"]
+    assert fw.name == "fedlearn-server" and list(fw.allowed[0].ports) == ["22", "8000"]
 
 
 def test_await_logs_while_an_operation_is_slow(monkeypatch):

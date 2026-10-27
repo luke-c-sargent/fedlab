@@ -24,8 +24,8 @@ def test_ssh_config_and_nodes_json(cfg):
     assert "us-central1-a" not in text
     data = json.loads(ssh.write_nodes_json(cfg, infos, key).read_text())
     server = data["fedlearn-server-aws-eu-west-1"]
-    assert server["role"] == "server" and server["flower"]["fleet_api"] == "5.6.7.8:9092"
-    assert server["ports"] == [22, 9092]
+    assert server["role"] == "server" and server["flower"]["fleet_api"] == "5.6.7.8:8000"
+    assert server["ports"] == [22, 8000]
     assert data["fedlearn-client-aws-us-east-1"]["role"] == "client"
     assert data["fedlearn-client-aws-us-east-1"]["ports"] == [22]
     assert data["fedlearn-client-aws-us-east-1"]["flower"] is None  # clients don't serve Flower APIs

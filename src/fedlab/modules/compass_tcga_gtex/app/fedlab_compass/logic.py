@@ -30,6 +30,18 @@ class EarlyStopper:
         return self.stale >= self.patience
 
 
+def weighted_mean(updates: list[tuple[list[np.ndarray], int]]) -> list[np.ndarray]:
+    """The weighted average of (arrays, weight) updates, in Flower FedAvg's own order of operations."""
+    factors = [weight / sum(w for _, w in updates) for _, weight in updates]
+    mean: list[np.ndarray] = []
+    for position in range(len(updates[0][0])):
+        total = updates[0][0][position] * factors[0]
+        for (arrays, _), factor in zip(updates[1:], factors[1:]):
+            total += arrays[position] * factor
+        mean.append(total)
+    return mean
+
+
 def is_cuda_oom(error: BaseException) -> bool:
     return type(error).__name__ == "OutOfMemoryError" or "CUDA out of memory" in str(error)
 

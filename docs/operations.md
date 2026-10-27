@@ -38,7 +38,7 @@ The same directory holds the SSH keypair `id_ed25519`. `destroy` keeps it.
 
 ## Ports and security
 
-Open ports are set with `ports` in the config. By default the server opens 22 and 9092 and the clients open 22, all from 0.0.0.0/0. See [Architecture](../README.md#architecture) for what each port carries.
+Open ports are set with `ports` in the config. By default the server opens 22 and 8000 and the clients open 22, all from 0.0.0.0/0. See [Architecture](../README.md#architecture) for what each port carries.
 
 SSH accepts the repo key only. Flower traffic uses TLS, and SuperNodes must be registered. The generated SSH config does not check host keys, because IPs are reused.
 

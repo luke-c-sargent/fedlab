@@ -1,7 +1,7 @@
-# Flower 1.33 needs Python >= 3.11. The original environment's torch 1.13.1 / torchvision 0.14.1 have
+# Flower 1.40 needs Python >= 3.11. The original environment's torch 1.13.1 / torchvision 0.14.1 have
 # no joint 3.11 builds (torchvision 0.14.1 stops at 3.10). torch 2.0.1 is the oldest torch with
 # matching 3.11 wheels (CUDA 11.7 builds). COMPASS imports and builds with it.
-flwr==1.33.0
+flwr==1.40.0
 torch==2.0.1
 torchvision==0.15.2
 numpy>=1.26,<2

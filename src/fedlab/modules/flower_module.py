@@ -11,7 +11,7 @@ from typing import Callable
 from ..flower.federation import Federation
 from .base import Deployment, FLModule, Site
 
-PYTHON_VERSION = "3.11"  # Flower 1.33 needs >= 3.11
+PYTHON_VERSION = "3.11"  # Flower 1.40 needs >= 3.11
 ENV_DIR = "fl"  # virtualenv at ~/fl on every node
 APP_DIR = "app"  # the Flower app on the server at ~/app
 RESULTS_DIR = "results"  # service-owned output root on the server at ~/results
@@ -98,7 +98,7 @@ class FlowerModule(FLModule):
 
     def run(self, d: Deployment) -> str:
         host = d.server.host
-        fed = Federation(d, ENV_DIR)
+        fed = Federation(d, ENV_DIR, self.service_env(d, d.server))
         return fed.submit(f"{host.home}/{APP_DIR}", self.run_config(), on_line=lambda line: d.log(f"  {line}") if line.strip() else None)
 
     def collect(self, d: Deployment, dest: Path) -> list[Path]:

@@ -5,7 +5,7 @@ the right thing for a fleet you own and for testing on real machines. It is not 
 work between institutions that do not trust each other; there, use `fedlab-async` directly and move the files
 yourself.
 
-    stage   environment and code on every node, the fedlab_async/fedlab_compass packages, each site's raw file
+    stage   environment and code on every node, the fedlab_core/fedlab_async/fedlab_compass packages, each site's raw file
     start   write the run and site configuration, `fedlab-async init` on the server
     run     repeat: emit on the server, copy requests to the sites, run the clients, copy responses back, collect
     collect results and the audit log
@@ -23,19 +23,19 @@ from typing import Callable
 
 import yaml
 
+import fedlab_core
 from fedlab_async.assets import measure
 
 from ...config import Node
 from ..base import Deployment, Site
 from ..flower_module import ENV_DIR
-from .module import CODE_DIR, SITES, SOURCE_DIR, CompassTcgaGtexModule
+from .module import CODE_DIR, NODE_IDS, PYLIB, SITES, SOURCE_DIR, CompassTcgaGtexModule
 
-PYLIB = "pylib"  # ~/pylib holds fedlab_async and fedlab_compass; PYTHONPATH points there
 RUN_DIR = "run"  # the server's run directory
-NODE_IDS = {"tcga": 1, "gtex": 2}
-STUB_REQUIREMENTS = "flwr==1.33.0\nnumpy>=1.26,<2\npandas==1.5.3\n"  # the real prepare scripts still run
+STUB_REQUIREMENTS = "flwr==1.40.0\nnumpy>=1.26,<2\npandas==1.5.3\n"  # the real prepare scripts still run
 EXTRA_REQUIREMENTS = "typer\npyyaml\n"  # for the fedlab-async commands
 ASYNC_PACKAGE = Path(__file__).resolve().parents[3] / "fedlab_async"
+CORE_PACKAGE = Path(fedlab_core.__file__).parent
 
 
 class CompassAsyncModule(CompassTcgaGtexModule):
@@ -85,6 +85,7 @@ class CompassAsyncModule(CompassTcgaGtexModule):
         else:
             d.log(f"stage {name}: python environment (install_environment: false, using ~/{ENV_DIR} as it is)")
         d.log(f"stage {name}: fedlab packages")
+        host.put(CORE_PACKAGE, f"{host.home}/{PYLIB}/fedlab_core")
         host.put(ASYNC_PACKAGE, f"{host.home}/{PYLIB}/fedlab_async")
         host.put(self.app_path / "fedlab_compass", f"{host.home}/{PYLIB}/fedlab_compass")
         self.stage_code(d, site, compass_source=not self.stub)  # the stub needs the scripts, not the COMPASS source
@@ -178,7 +179,7 @@ class CompassAsyncModule(CompassTcgaGtexModule):
 
     def _run_client(self, d: Deployment, site: Site) -> str:
         home = site.host.home
-        args = f"client --exchange {home}/exchange --state-dir {home}/state --site-file {home}/site.yaml --app fedlab_compass.async_client:app"
+        args = f"client --exchange {home}/exchange --state-dir {home}/state --site-file {home}/site.yaml --client-factory fedlab_compass.neutral_client:make_client"
         code, output = self._command(site, args)
         return output
 

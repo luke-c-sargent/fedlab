@@ -36,7 +36,7 @@ def test_yaml_and_env_override(tmp_path, monkeypatch):
 
 
 def test_ports_always_include_ssh():
-    assert Settings(ports=[9092]).open_ports == [22, 9092]
+    assert Settings(ports=[8000]).open_ports == [22, 8000]
 
 
 def test_invalid_run_name():

@@ -1,4 +1,4 @@
-"""What the orchestrator needs from a training backend. Pure Python/numpy: no torch, no COMPASS."""
+"""What the strategy needs from a training backend. Pure Python/numpy: no torch, no COMPASS."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ DATA_BINDING = "federated_dataset_manifest_sha256"
 
 # site name (as set in the node config) -> (client id used in metrics, validation contexts the site owns)
 SITES = {"tcga": ("TCGA", list(range(33))), "gtex": ("GTEx", [33])}
+NODE_IDS = {"tcga": 1, "gtex": 2}  # the id each site has in the strategy (file runs name request files by it)
 
 
 @dataclass

@@ -1,0 +1,24 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "fedlab-strategy-smoke"
+version = "0.1.0"
+dependencies = ["flwr==1.40.0", "numpy>=1.26"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["fedlab_strategy_smoke"]
+
+[tool.flwr.app]
+publisher = "fedlab"
+
+[tool.flwr.app.components]
+serverapp = "fedlab_strategy_smoke.server_app:app"
+clientapp = "fedlab_strategy_smoke.client_app:app"
+
+[tool.flwr.app.config]
+program = "fedlab_strategy_smoke:factory"
+run-dir = "."
+rounds = 3
+nodes = "1,2"

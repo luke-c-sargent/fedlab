@@ -8,6 +8,8 @@ import sys
 from pathlib import Path
 from typing import Callable
 
+import fedlab_core
+
 from ...config import Node
 from ..base import Deployment, Site
 from ..flower_module import APP_DIR, ENV_DIR, FlowerModule
@@ -17,6 +19,8 @@ COMPASS_URL = "https://github.com/mims-harvard/COMPASS.git"
 COMPASS_COMMIT = "9ecacfb72d63feec6434d336b702eb22a68c13a2"  # pinned by the original experiment
 TRAIN_DIR = "compass_hpc_foundation_model_train"  # inside the user's checkout
 CODE_DIR, SOURCE_DIR, SITE_DIR = "compass_code", "compass_src", "site"  # on every node, under ~
+PYLIB = "pylib"  # ~/pylib holds fedlab_core (the app imports it); PYTHONPATH points there
+NODE_IDS = {"tcga": 1, "gtex": 2}  # the id each site has in the strategy (also in the app's contract, which is shipped to the nodes)
 SITES = ("tcga", "gtex")
 DEFAULTS = {
     "backend": "compass", "seed": 42, "rounds": 100, "local_epochs": 1, "patience": 10,
@@ -129,8 +133,12 @@ class CompassTcgaGtexModule(FlowerModule):
             "device": "cpu" if self.stub else str(o["device"]),
         }
 
+    def node_config(self, site: Site) -> dict:
+        return {**super().node_config(site), "node-id": NODE_IDS[site.node.site]}
+
     def service_env(self, d: Deployment, site: Site) -> dict[str, str]:
         env = super().service_env(d, site)
+        env["PYTHONPATH"] = f"{site.host.home}/{PYLIB}"
         env["FEDLAB_STATE_DIR"] = f"{site.host.home}/state"  # per-node optimizer state (too large for context.state)
         if not self.stub:
             home = site.host.home
@@ -158,6 +166,7 @@ class CompassTcgaGtexModule(FlowerModule):
         )
 
     def stage_site(self, d: Deployment, site: Site) -> None:
+        site.host.put(Path(fedlab_core.__file__).parent, f"{site.host.home}/{PYLIB}/fedlab_core")
         if self.stub:
             return
         host, name = site.host, site.node.name

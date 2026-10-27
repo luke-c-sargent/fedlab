@@ -21,9 +21,9 @@ Options (`module_options`):
 
 **Results.** `collect` copies `run-<id>/` from the server. It holds `pretrainer_federated_tcga_gtex.pt` (the COMPASS pretrainer), `best_model.pth`, `history.tsv`, and `rounds.json` (per-round losses, times, and GPU memory). It also copies the SuperLink and SuperNode logs.
 
-**Differences from the original scripts.** The port uses Flower 1.33 (Message API) instead of 1.8.0.
+**Differences from the original scripts.** The port uses Flower 1.40 (Message API) instead of 1.8.0.
 
-- Flower 1.33 needs Python 3.11, so the module uses `torch 2.0.1` and `torchvision 0.15.2` (see `requirements.txt`).
-- Each message runs in a new process. The Adam state is saved in a file on the node between rounds. It is too large for the 4 MiB `context.state` channel of Flower. The dropout RNG is seeded again each round.
+- Flower 1.40 needs Python 3.11, so the module uses `torch 2.0.1` and `torchvision 0.15.2` (see `requirements.txt`).
+- Each message runs in a new process. The Adam state is saved in a file on the node between rounds. It is about 8 MiB, so it is kept in a file and not in `context.state`. The dropout RNG is seeded again each round.
 - Each node checks its prepared data once during `deploy`. Every reply carries the hash of the federated manifest the client used, and the server rejects a reply that differs from its own. The original's three extra dataset ids are not sent.
 - Only the default path is ported: historical protocol, scratch initialization, random negatives, and the full GTEx set. Other settings raise an error.
