@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "fedlab-strategy-smoke"
 version = "0.1.0"
-dependencies = ["flwr==1.33.0", "numpy>=1.26"]
+dependencies = ["flwr==1.40.0", "numpy>=1.26"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["fedlab_strategy_smoke"]

@@ -20,10 +20,8 @@ from ..modules.base import Deployment, Site
 from ..remote import Host
 from . import certs
 
-FLEET_PORT = 9092  # the only SuperLink port other nodes reach
-SERVERAPPIO_PORT = 9091
-CONTROL_PORT = 9093
-CLIENTAPPIO_PORT = 9094
+FLEET_PORT = 8000  # the one SuperLink HTTP port: Fleet, Control and Runtime APIs share it
+CLIENTAPPIO_PORT = 9094  # each SuperNode's own local API (--host 127.0.0.1 --port), never reached from outside
 HEALTH_PORT = 9101
 CONNECTION = "fedlab"  # name of the SuperLink connection in the server's ~/.flwr/config.toml
 SAFE_PATH = "/usr/local/bin:/usr/bin:/bin"
@@ -112,7 +110,7 @@ class Federation:
             sh.put(key.public_path, f"{pki}/{key.public_path.name}")
         sh.put_text(
             f'[superlink]\ndefault = "{CONNECTION}"\n\n[superlink.{CONNECTION}]\n'
-            f'address = "127.0.0.1:{CONTROL_PORT}"\nroot-certificates = "{pki}/ca.pem"\n',
+            f'address = "127.0.0.1:{FLEET_PORT}"\nroot-certificates = "{pki}/ca.pem"\n',
             f"{sh.home}/.flwr/config.toml",
         )
         for c in d.clients:
@@ -126,8 +124,7 @@ class Federation:
             "superlink",
             f"flower-superlink --ssl-ca-certfile {pki}/ca.pem --ssl-certfile {pki}/server.pem "
             f"--ssl-keyfile {pki}/server.key --enable-supernode-auth --database {sh.home}/superlink/state.db "
-            f"--disable-runtime-dependency-installation --fleet-api-address 0.0.0.0:{FLEET_PORT} "
-            f"--control-api-address 127.0.0.1:{CONTROL_PORT} --serverappio-api-address 127.0.0.1:{SERVERAPPIO_PORT}",
+            f"--disable-runtime-dependency-installation --host 0.0.0.0 --port {FLEET_PORT}",
             self.env(sh, extra_env(server)),
         )
         self._wait(lambda: self._flwr("supernode ls", check=False)[0] == 0, timeout, "SuperLink did not come up", "superlink")
@@ -142,7 +139,7 @@ class Federation:
                 f"flower-supernode --root-certificates {self._pki(ch)}/ca.pem "
                 f"--superlink {sh.address}:{FLEET_PORT} --auth-supernode-private-key {self._pki(ch)}/node-key "
                 f"--node-config {_quote(toml_pairs(node_config(c)))} "
-                f"--clientappio-api-address 127.0.0.1:{self._port(ch, CLIENTAPPIO_PORT, i)} "
+                f"--host 127.0.0.1 --port {self._port(ch, CLIENTAPPIO_PORT, i)} "
                 f"--health-server-address 127.0.0.1:{self._port(ch, HEALTH_PORT, i)}",
                 self.env(ch, extra_env(c)),
             )

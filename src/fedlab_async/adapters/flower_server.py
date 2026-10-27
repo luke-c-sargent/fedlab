@@ -18,6 +18,7 @@ from flwr.proto.message_pb2 import Message as ProtoMessage
 from flwr.serverapp import Grid
 from flwr.serverapp.strategy import Strategy
 from flwr.serverapp.strategy.result import Result
+from flwr.supercore.task_identity import TaskIdentity
 
 from ..layout import Exchange
 from ..server import Plan, Program, Server, Slot, Timing
@@ -61,6 +62,8 @@ class _RecordingGrid(Grid):
 
     def __init__(self, node_ids: list[int], run_id: int):
         self._node_ids, self._run_id = node_ids, run_id
+        # Flower 1.40 builds a Message's sender from process-wide state; build_request rewrites the metadata anyway
+        TaskIdentity.run_id, TaskIdentity.node_id, TaskIdentity.task_id = run_id, 0, 0
 
     def set_run(self, run) -> None:
         raise NotImplementedError

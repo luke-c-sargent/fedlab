@@ -78,7 +78,7 @@ class Settings(BaseSettings):
     aws_machine_type: str = "m5.xlarge"
     gcp_machine_type: str = "n2-standard-4"
     disk_gb: int = 200
-    ports: list[int] = [22, 9092]
+    ports: list[int] = [22, 8000]
     warn_after_days: float = 3
     ssh_user: str = "ubuntu"
     gcp_project: str | None = Field(

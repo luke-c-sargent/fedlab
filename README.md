@@ -29,18 +29,18 @@ flowchart TB
     direction TB
     th["Client VM: TCGA <br/> AWS us-east"]
     a1("ClientApp <br/> GPU, local data")
-    n1("SuperNode <br/> dials out to 9092")
+    n1("SuperNode <br/> dials out to 8000")
   end
   subgraph gtex[" "]
     direction TB
     gh["Client VM: GTEx <br/> GCP us-central"]
     a2("ClientApp <br/> GPU, local data")
-    n2("SuperNode <br/> dials out to 9092")
+    n2("SuperNode <br/> dials out to 8000")
   end
   subgraph server[" "]
     direction TB
     sh["Server VM <br/> AWS eu-west"]
-    link("SuperLink <br/> Fleet API, inbound 9092 <br/> gRPC over HTTP/2, TLS")
+    link("SuperLink <br/> HTTP API, inbound 8000 <br/> HTTPS (TLS)")
     app("ServerApp")
   end
   th ~~~ a1
@@ -48,7 +48,7 @@ flowchart TB
   sh ~~~ link
   a1 --- n1
   a2 --- n2
-  link <-->|"loopback only: 9091, 9093"| app
+  link <-->|"same HTTP port, via loopback"| app
   n1 ==> sh
   n2 ==> sh
   local -.->|"SSH 22, rsync"| th
@@ -135,10 +135,10 @@ flowchart TB
 
 |  | Live (Flower) | File-based |
 |---|---|---|
-| Server inbound | 22, 9092 (TCP) | none (22 if `fedlab` drives it over SSH) |
+| Server inbound | 22, 8000 (TCP) | none (22 if `fedlab` drives it over SSH) |
 | Client inbound | 22 | none (22 if `fedlab` drives it over SSH) |
-| Client outbound | to server:9092, held open | none |
-| Protocol | gRPC over HTTP/2, TLS | files; any transport |
+| Client outbound | to server:8000 | none |
+| Protocol | HTTPS (TLS) | files; any transport |
 | Who connects | clients dial the server | nobody |
 | Authentication | per-node keys, private CA | hash, nonce, and sequence number in each file |
 | Encryption | TLS | left to the transport |

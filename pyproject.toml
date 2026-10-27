@@ -18,7 +18,7 @@ dependencies = [
 dev = [
     "pytest>=8",
     "moto[ec2]>=5",
-    "flwr==1.33.0",
+    "flwr==1.40.0",
 ]
 
 [project.scripts]

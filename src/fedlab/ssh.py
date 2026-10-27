@@ -131,10 +131,9 @@ def write_nodes_json(cfg: Settings, infos: list[NodeInfo], key: Keypair) -> Path
             "ssh_user": cfg.ssh_user,
             "ssh_key": str(key.private_path),
             "ports": cfg.ports_for(roles.get(i.name, "client")),
-            # The SuperLink's Fleet API is the only Flower port clients reach (server only).
-            # The ServerAppIo (9091) and Control (9093) APIs listen on the server's loopback.
+            # The SuperLink's HTTP port serves the Fleet, Control and Runtime APIs (server only).
             "flower": (
-                {"fleet_api": f"{i.public_ip}:9092"}
+                {"fleet_api": f"{i.public_ip}:8000"}
                 if i.public_ip and roles.get(i.name) == "server"
                 else None
             ),

@@ -32,7 +32,7 @@ from ..flower_module import ENV_DIR
 from .module import CODE_DIR, NODE_IDS, PYLIB, SITES, SOURCE_DIR, CompassTcgaGtexModule
 
 RUN_DIR = "run"  # the server's run directory
-STUB_REQUIREMENTS = "flwr==1.33.0\nnumpy>=1.26,<2\npandas==1.5.3\n"  # the real prepare scripts still run
+STUB_REQUIREMENTS = "flwr==1.40.0\nnumpy>=1.26,<2\npandas==1.5.3\n"  # the real prepare scripts still run
 EXTRA_REQUIREMENTS = "typer\npyyaml\n"  # for the fedlab-async commands
 ASYNC_PACKAGE = Path(__file__).resolve().parents[3] / "fedlab_async"
 CORE_PACKAGE = Path(fedlab_core.__file__).parent
